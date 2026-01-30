@@ -502,6 +502,69 @@ def on_message(message):
                 user_states[uid] = 'waiting_add_users'
                 return
 
+            if text.startswith("get_money"):
+                if uid not in admins:
+                    message.reply("شما دسترسی به این دستور را ندارید.")
+                    return
+
+                lines = text.strip().split('\n')
+
+                if len(lines) < 5:
+                    message.reply(
+                        "📝 **فرمت دستور:**\n\n"
+                        "get_money\n"
+                        "<مبلغ به تومان>\n"
+                        "<نام کلاس>\n"
+                        "<عنوان صورتحساب>\n"
+                        "<توضیحات>\n\n"
+                        "**مثال:**\n"
+                        "get_money\n"
+                        "5000\n"
+                        "05\n"
+                        "حق عضویت\n"
+                        "پرداخت حق عضویت تیرماه ۱۴۰۳"
+                    )
+                    return
+
+                _, amount_str, class_name, title, description = lines[:5]
+
+                validation = validate_payment_input(amount_str, class_name, title, description)
+
+                if not validation['valid']:
+                    error_msg = "⚠️ **خطاهای اعتبارسنجی:**\n\n"
+                    for error in validation['errors']:
+                        error_msg += f"• {error}\n"
+
+                    error_msg += "\n🔍 **راهنمایی:**\n"
+                    error_msg += "- برای مشاهده کلاس‌ها: list_classes\n"
+                    error_msg += "- عنوان: حداکثر 32 کاراکتر\n"
+                    error_msg += "- توضیحات: حداکثر 255 کاراکتر"
+
+                    message.reply(error_msg)
+                    return
+
+                summary = (
+                    f"✅ **اطلاعات معتبر هستند**\n\n"
+                    f"📋 **خلاصه صورتحساب:**\n"
+                    f"• مبلغ: {int(validation['amount_rial'] / 10):,} تومان ({validation['amount_rial']:,} ریال)\n"
+                    f"• کلاس: {validation['class_name']} ({validation['users_count']} کاربر)\n"
+                    f"• عنوان: {validation['title']}\n"
+                    f"• توضیحات: {validation['description']}\n\n"
+                    f"آیا از ارسال صورتحساب به {validation['users_count']} کاربر مطمئن هستید؟\n"
+                    f"✅ تایید\n"
+                    f"❌ لغو"
+                )
+
+                user_states[uid] = 'confirm_payment'
+                pending_actions[uid] = validation
+
+                kb = InlineKeyboard(
+                    [("✅ تایید و ارسال", f"confirm_pay_{uid}"), ("❌ لغو", f"cancel_pay_{uid}")]
+                )
+
+                message.reply(summary, reply_markup=kb)
+                return
+
             if uid in user_states and user_states[uid] == 'waiting_add_users':
                 lines = text.strip().split('\n')
                 if len(lines) < 2:
