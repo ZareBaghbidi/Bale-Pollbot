@@ -949,10 +949,9 @@ def on_message(message):
 
                 try:
                     stats = get_invoice_stats()
+                    grouped_invoices = get_grouped_invoices(limit=15)
 
-                    recent_invoices = get_all_invoices(limit=15)
-
-                    report = f"🧾 *گزارش صورتحساب‌های ارسال شده*\n\n"
+                    report = f"🧾 *گزارش صورتحساب‌های ارسال شده (گروه‌بندی شده)*\n\n"
                     report += f"📊 *آمار کلی:*\n"
                     report += f"• کل صورتحساب‌ها: {stats['total']}\n"
                     report += f"• ارسال شده: {stats['sent']}\n"
@@ -960,26 +959,28 @@ def on_message(message):
                     report += f"• کاربران منحصر به فرد: {stats['unique_users']}\n"
                     report += f"• کلاس‌های منحصر به فرد: {stats['unique_classes']}\n\n"
 
-                    if recent_invoices:
+                    if grouped_invoices:
                         report += f"🕒 *آخرین صورتحساب‌ها:*\n"
                         report += "─" * 40 + "\n"
 
-                        for i, invoice in enumerate(recent_invoices, 1):
-                            user_name = invoice.get('user_name') or f"ID: {invoice['user_id']}"
-                            amount = invoice['amount']
-                            status = invoice['status']
-                            class_name = invoice.get('class_name', 'بدون کلاس')
-                            title = invoice['title'] if len(invoice['title']) > 20 else invoice['title']
-                            sent_time = datetime.datetime.fromtimestamp(invoice['sent_at']).strftime('%m/%d %H:%M')
+                        for i, group in enumerate(grouped_invoices, 1):
+                            class_name = group['class_name'] or 'بدون کلاس'
+                            title = group['title']
+                            amount = group['amount']
+                            total_count = group['total_count']
+                            paid_count = group['paid_count']
+                            paid_amount = group['paid_amount']
+                            last_sent = datetime.datetime.fromtimestamp(group['last_sent']).strftime('%m/%d %H:%M')
 
-                            status_icon = "✅" if status == 'paid' else "📤" if status == 'sent' else "⏳"
-
-                            report += f"{i}. {status_icon} {user_name}\n"
-                            report += f"   💰 {amount//10:,} تومان | 🏫 {class_name}\n"
+                            report += f"{i}. 🏫 *{class_name}*\n"
                             report += f"   📝 {title}\n"
-                            report += f"   ⏰ {sent_time} | 📊 {status}\n"
+                            report += f"   💰 {amount//10:,} تومان\n"
+                            report += f"   📤 ارسال شده: {total_count}\n"
+                            report += f"   ✅ پرداخت شده: {paid_count}\n"
+                            report += f"   💳 مبلغ پرداختی: {paid_amount//10:,} تومان\n"
+                            report += f"   ⏰ آخرین ارسال: {last_sent}\n"
 
-                            if i < len(recent_invoices):
+                            if i < len(grouped_invoices):
                                 report += "   ─────\n"
 
                     report += "\n🔍 *دستورات بیشتر:*\n"
@@ -1019,9 +1020,9 @@ def on_message(message):
                         elif part.startswith("class="):
                             class_name = part.split("=")[1]
 
-                    filtered_invoices = get_all_invoices(days=days, status=status, class_name=class_name, limit=30)
+                    grouped_invoices = get_grouped_invoices(days=days, status=status, class_name=class_name, limit=30)
 
-                    report = f"🔍 *صورتحساب‌های فیلتر شده*\n\n"
+                    report = f"🔍 *صورتحساب‌های فیلتر شده (گروه‌بندی)*\n\n"
                     report += f"📊 *فیلترها:*\n"
                     if days:
                         report += f"• روزهای گذشته: {days}\n"
@@ -1030,17 +1031,21 @@ def on_message(message):
                     if class_name:
                         report += f"• کلاس: {class_name}\n"
 
-                    report += f"• تعداد نتایج: {len(filtered_invoices)}\n\n"
+                    report += f"• تعداد گروه‌ها: {len(grouped_invoices)}\n\n"
 
-                    if filtered_invoices:
+                    if grouped_invoices:
                         report += f"📋 *نتایج:*\n"
-                        for i, invoice in enumerate(filtered_invoices, 1):
-                            user_name = invoice.get('user_name') or f"ID: {invoice['user_id']}"
-                            amount = invoice['amount']
-                            status_icon = "✅" if invoice['status'] == 'paid' else "📤"
-                            sent_time = datetime.datetime.fromtimestamp(invoice['sent_at']).strftime('%m/%d')
+                        for i, group in enumerate(grouped_invoices, 1):
+                            class_name = group['class_name'] or 'بدون کلاس'
+                            title = group['title'][:20] + '...' if len(group['title']) > 20 else group['title']
+                            amount = group['amount']
+                            total_count = group['total_count']
+                            paid_count = group['paid_count']
+                            last_sent = datetime.datetime.fromtimestamp(group['last_sent']).strftime('%m/%d')
 
-                            report += f"{i}. {status_icon} {user_name} | {amount//10:,} تومان | {invoice['status']} | {sent_time}\n"
+                            report += f"{i}. 🏫 {class_name} | 📝 {title}\n"
+                            report += f"   💰 {amount//10:,} تومان | 📤 {total_count} | ✅ {paid_count}\n"
+                            report += f"   ⏰ {last_sent}\n"
 
                     if len(report) > 3800:
                         message.reply(report[:3800])

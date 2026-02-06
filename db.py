@@ -566,3 +566,44 @@ def get_unpaid_invoices(days=None):
     cur.close()
     c.close()
     return [dict(row) for row in rows]
+
+def get_grouped_invoices(days=None, status=None, class_name=None, limit=50):
+    c = conn()
+    cur = c.cursor()
+
+    query = """
+            SELECT
+                class_name,
+                title,
+                amount,
+                COUNT(*) as total_count,
+                SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) as paid_count,
+                SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) as paid_amount,
+                MIN(sent_at) as first_sent,
+                MAX(sent_at) as last_sent
+            FROM invoices
+            WHERE 1=1
+            """
+    params = []
+
+    if days:
+        timestamp_limit = int(datetime.datetime.now().timestamp()) - (days * 24 * 3600)
+        query += " AND sent_at >= ?"
+        params.append(timestamp_limit)
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+
+    if class_name:
+        query += " AND class_name = ?"
+        params.append(class_name)
+
+    query += " GROUP BY class_name, title, amount ORDER BY last_sent DESC LIMIT ?"
+    params.append(limit)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    c.close()
+    return [dict(row) for row in rows]
