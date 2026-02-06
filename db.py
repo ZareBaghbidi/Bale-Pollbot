@@ -279,23 +279,6 @@ def del_task(tid):
     cur.close()
     c.close()
 
-# ---------- score distribution ----------
-def get_score_distribution(pid, q_id):
-    """Returns {score: count} for a specific question in a score poll"""
-    c = conn()
-    cur = c.cursor()
-    cur.execute("""
-        SELECT CAST(value AS INTEGER), COUNT(*)
-        FROM votes
-        WHERE poll_id = ? AND question_id = ?
-        GROUP BY CAST(value AS INTEGER)
-        ORDER BY CAST(value AS INTEGER)
-    """, (pid, q_id))
-    rows = cur.fetchall()
-    cur.close()
-    c.close()
-    return {score: count for score, count in rows}
-
 # ---------- payments ----------
 def save_payment(user_id, amount, payload, name=None, phone=None, email=None, telegram_charge_id=None, provider_charge_id=None, status='completed'):
     c = conn()
@@ -526,22 +509,6 @@ def get_class_invoice_summary(class_name=None):
     c.close()
     return [dict(row) for row in rows]
 
-def get_user_invoices(user_id, limit=20):
-    c = conn()
-    cur = c.cursor()
-    cur.execute("""
-                SELECT i.*, p.telegram_charge_id, p.name as payer_name, p.phone
-                FROM invoices i
-                         LEFT JOIN payments p ON i.payment_id = p.id
-                WHERE i.user_id = ?
-                ORDER BY i.sent_at DESC
-                    LIMIT ?
-                """, (user_id, limit))
-    rows = cur.fetchall()
-    cur.close()
-    c.close()
-    return [dict(row) for row in rows]
-
 def get_unpaid_invoices(days=None):
     c = conn()
     cur = c.cursor()
@@ -607,3 +574,33 @@ def get_grouped_invoices(days=None, status=None, class_name=None, limit=50):
     cur.close()
     c.close()
     return [dict(row) for row in rows]
+def get_class_users_with_names(class_name):
+    """دریافت لیست کاربران یک کلاس با نام‌هایشان"""
+    c = conn()
+    cur = c.cursor()
+
+    # ابتدا ID کلاس را پیدا می‌کنیم
+    cur.execute("SELECT id FROM classes WHERE name=?", (class_name,))
+    class_row = cur.fetchone()
+
+    if not class_row:
+        cur.close()
+        c.close()
+        return None  # کلاس وجود ندارد
+
+    class_id = class_row['id']
+
+    # دریافت کاربران کلاس با نام‌هایشان (بدون username)
+    cur.execute("""
+                SELECT u.chat_id, u.name
+                FROM users u
+                         JOIN user_classes uc ON u.chat_id = uc.user_id
+                WHERE uc.class_id = ?
+                ORDER BY u.name
+                """, (class_id,))
+
+    rows = cur.fetchall()
+    cur.close()
+    c.close()
+
+    return [(row['chat_id'], row['name'] or "بدون نام") for row in rows]

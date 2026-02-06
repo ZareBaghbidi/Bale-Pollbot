@@ -685,6 +685,44 @@ def on_message(message):
                 message.reply(msg)
                 return
 
+            if text.startswith("class_users"):
+                if uid not in admins:
+                    message.reply("دسترسی denied.")
+                    return
+
+                parts = text.split()
+                if len(parts) < 2:
+                    message.reply("فرمت: class_users <نام کلاس>\nمثال: class_users 05")
+                    return
+
+                class_name = parts[1]
+                users_list = get_class_users_with_names(class_name)
+
+                if users_list is None:
+                    message.reply(f"❌ کلاس '{class_name}' یافت نشد.")
+                    return
+
+                if not users_list:
+                    message.reply(f"📭 هیچ کاربری در کلاس '{class_name}' وجود ندارد.")
+                    return
+
+                msg = f"👥 لیست کاربران کلاس '{class_name}':\n\n"
+                for i, (user_id, name) in enumerate(users_list, 1):
+                    msg += f"{i}. {name}\n"
+                    msg += f"   آیدی: {user_id}\n"
+
+                # اضافه کردن آمار
+                msg += f"\n📊 آمار: {len(users_list)} کاربر"
+
+                # اگر پیام طولانی است، آن را به چند قسمت تقسیم کنیم
+                if len(msg) > 3800:
+                    chunks = [msg[i:i+3800] for i in range(0, len(msg), 3800)]
+                    for chunk in chunks:
+                        message.reply(chunk)
+                else:
+                    message.reply(msg)
+                return
+
             if text == "list_polls":
                 try:
                     polls = show_all_polls()
