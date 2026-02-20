@@ -442,7 +442,44 @@ def on_callback_query(callback_query):
         )
         callback_query.answer("عملیات لغو شد")
         return
+    elif callback_query.data.startswith("confirm_delclass_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
 
+        pending = pending_actions.get(target_uid)
+        if not pending or pending.get('kind') != 'delete_class':
+            callback_query.answer("اطلاعات یافت نشد!", show_alert=True)
+            return
+
+        class_name = pending['class_name']
+        callback_query.answer("در حال حذف...")
+
+        success, result_msg = delete_class(class_name)
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text(result_msg, reply_markup=None)
+        return
+
+    elif callback_query.data.startswith("cancel_delclass_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text("❌ عملیات حذف کلاس لغو شد.", reply_markup=None)
+        callback_query.answer("عملیات لغو شد")
+        return
     else :
         try:
             data = callback_query.data.split(":")
@@ -581,6 +618,33 @@ def on_message(message):
             return
 
         if uid in admins:
+            if text.startswith("delete_class"):
+                parts = text.split()
+                if len(parts) != 2:
+                    message.reply("📝 *فرمت:*\n`delete_class <نام کلاس>`\nمثال: delete_class 05")
+                    return
+                class_name = parts[1].strip()
+
+                class_id = get_class_id_by_name(class_name)
+                if not class_id:
+                    message.reply(f"❌ کلاس '{class_name}' وجود ندارد.")
+                    return
+
+                pending_actions[uid] = {'kind': 'delete_class', 'class_name': class_name}
+                user_states[uid] = 'confirm_delete_class'
+
+                summary = f"⚠️ *آیا از حذف کلاس '{class_name}' اطمینان دارید؟*\n\n"
+                summary += "🔸 تمام نظرسنجی‌ها و پاسخ‌های مرتبط با این کلاس\n"
+                summary += "🔸 تمام صورتحساب‌های ارسال شده برای این کلاس\n"
+                summary += "🔸 ارتباط کاربران با این کلاس\n\n"
+                summary += "همگی **برای همیشه حذف** خواهند شد. این عمل قابل بازگشت نیست."
+
+                kb = InlineKeyboard(
+                    [("✅ بله، حذف شود", f"confirm_delclass_{uid}"), ("❌ خیر، لغو", f"cancel_delclass_{uid}")]
+                )
+                message.reply(summary, reply_markup=kb)
+                return
+
             if text.startswith("remove_from_class"):
                 parts = text.split()
                 if len(parts) != 3:

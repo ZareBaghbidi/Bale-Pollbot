@@ -648,3 +648,45 @@ def remove_user_from_class(class_name, user_id):
         return True, f"✅ کاربر {user_id} از کلاس '{class_name}' حذف شد."
     else:
         return False, f"❌ کاربر {user_id} در کلاس '{class_name}' یافت نشد."
+
+def delete_class(class_name):
+    conn_obj = conn()
+    cursor = conn_obj.cursor()
+    try:
+        cursor.execute("BEGIN TRANSACTION")
+
+        cursor.execute("SELECT id FROM classes WHERE name=?", (class_name,))
+        row = cursor.fetchone()
+        if not row:
+            conn_obj.rollback()
+            return False, "❌ کلاس یافت نشد"
+        class_id = row['id']
+
+        cursor.execute("SELECT id FROM polls WHERE class=?", (class_name,))
+        poll_ids = [r['id'] for r in cursor.fetchall()]
+
+        for pid in poll_ids:
+            cursor.execute("DELETE FROM tasks WHERE poll_id=?", (pid,))
+
+        for pid in poll_ids:
+            cursor.execute("DELETE FROM votes WHERE poll_id=?", (pid,))
+
+        for pid in poll_ids:
+            cursor.execute("DELETE FROM questions WHERE poll_id=?", (pid,))
+
+        cursor.execute("DELETE FROM polls WHERE class=?", (class_name,))
+
+        cursor.execute("DELETE FROM invoices WHERE class_name=?", (class_name,))
+
+        cursor.execute("DELETE FROM user_classes WHERE class_id=?", (class_id,))
+
+        cursor.execute("DELETE FROM classes WHERE id=?", (class_id,))
+
+        conn_obj.commit()
+        return True, f"✅ کلاس '{class_name}' و تمام نظرسنجی‌ها و صورتحساب‌های مربوطه حذف شدند."
+    except Exception as e:
+        conn_obj.rollback()
+        return False, f"❌ خطا در حذف کلاس: {str(e)}"
+    finally:
+        cursor.close()
+        conn_obj.close()
