@@ -118,7 +118,8 @@ def add_users_to_class(class_id, user_ids):
 def create_poll(poll_type, class_=None):
     c = conn()
     cur = c.cursor()
-    cur.execute("INSERT INTO polls (type, class, active) VALUES (?, ?, 0)", (poll_type, class_))
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("INSERT INTO polls (type, class, active, created_at) VALUES (?, ?, 0, ?)", (poll_type, class_, now))
     pid = cur.lastrowid
     c.commit()
     cur.close()
@@ -132,6 +133,19 @@ def stop_poll(pid):
     c.commit()
     cur.close()
     c.close()
+
+def deactivate_old_polls(days=7):
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+    c = conn()
+    cur = c.cursor()
+    cur.execute("UPDATE polls SET active=0 WHERE active=1 AND created_at < ?", (cutoff_str,))
+    affected = cur.rowcount
+    c.commit()
+    cur.close()
+    c.close()
+    return affected
 
 def show_active_polls():
     c = conn()
@@ -575,7 +589,6 @@ def get_grouped_invoices(days=None, status=None, class_name=None, limit=50):
     c.close()
     return [dict(row) for row in rows]
 def get_class_users_with_names(class_name):
-    """دریافت لیست کاربران یک کلاس با نام‌هایشان"""
     c = conn()
     cur = c.cursor()
 
@@ -604,3 +617,76 @@ def get_class_users_with_names(class_name):
     c.close()
 
     return [(row['chat_id'], row['name'] or "بدون نام") for row in rows]
+
+def is_poll_active(pid):
+    c = conn()
+    cur = c.cursor()
+    cur.execute("SELECT active FROM polls WHERE id=?", (pid,))
+    r = cur.fetchone()
+    cur.close()
+    c.close()
+    return r['active'] == 1 if r else False
+
+def remove_user_from_class(class_name, user_id):
+    c = conn()
+    cur = c.cursor()
+    # ابتدا شناسه کلاس را پیدا می‌کنیم
+    class_id = get_class_id_by_name(class_name)
+    if class_id is None:
+        cur.close()
+        c.close()
+        return False, "❌ کلاس یافت نشد"
+
+    # حذف کاربر از کلاس
+    cur.execute("DELETE FROM user_classes WHERE user_id=? AND class_id=?", (user_id, class_id))
+    affected = cur.rowcount
+    c.commit()
+    cur.close()
+    c.close()
+
+    if affected > 0:
+        return True, f"✅ کاربر {user_id} از کلاس '{class_name}' حذف شد."
+    else:
+        return False, f"❌ کاربر {user_id} در کلاس '{class_name}' یافت نشد."
+
+def delete_class(class_name):
+    conn_obj = conn()
+    cursor = conn_obj.cursor()
+    try:
+        cursor.execute("BEGIN TRANSACTION")
+
+        cursor.execute("SELECT id FROM classes WHERE name=?", (class_name,))
+        row = cursor.fetchone()
+        if not row:
+            conn_obj.rollback()
+            return False, "❌ کلاس یافت نشد"
+        class_id = row['id']
+
+        cursor.execute("SELECT id FROM polls WHERE class=?", (class_name,))
+        poll_ids = [r['id'] for r in cursor.fetchall()]
+
+        for pid in poll_ids:
+            cursor.execute("DELETE FROM tasks WHERE poll_id=?", (pid,))
+
+        for pid in poll_ids:
+            cursor.execute("DELETE FROM votes WHERE poll_id=?", (pid,))
+
+        for pid in poll_ids:
+            cursor.execute("DELETE FROM questions WHERE poll_id=?", (pid,))
+
+        cursor.execute("DELETE FROM polls WHERE class=?", (class_name,))
+
+        cursor.execute("DELETE FROM invoices WHERE class_name=?", (class_name,))
+
+        cursor.execute("DELETE FROM user_classes WHERE class_id=?", (class_id,))
+
+        cursor.execute("DELETE FROM classes WHERE id=?", (class_id,))
+
+        conn_obj.commit()
+        return True, f"✅ کلاس '{class_name}' و تمام نظرسنجی‌ها و صورتحساب‌های مربوطه حذف شدند."
+    except Exception as e:
+        conn_obj.rollback()
+        return False, f"❌ خطا در حذف کلاس: {str(e)}"
+    finally:
+        cursor.close()
+        conn_obj.close()
