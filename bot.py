@@ -480,6 +480,74 @@ def on_callback_query(callback_query):
         callback_query.message.edit_text("❌ عملیات حذف کلاس لغو شد.", reply_markup=None)
         callback_query.answer("عملیات لغو شد")
         return
+
+    elif callback_query.data.startswith("confirm_sendmsg_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        pending = pending_actions.get(target_uid)
+        if not pending or pending.get('kind') != 'send_message':
+            callback_query.answer("اطلاعات یافت نشد یا منقضی شده!", show_alert=True)
+            return
+
+        callback_query.answer("در حال ارسال پیام...")
+
+        class_name = pending['class_name']
+        message_text = pending['message_text']
+        user_ids = pending['user_ids']
+
+        success_count = 0
+        fail_count = 0
+        fail_details = []
+
+        for uid in user_ids:
+            try:
+                client.send_message(uid, message_text)
+                success_count += 1
+                time.sleep(0.3)
+            except Exception as e:
+                fail_count += 1
+                user_name = get_user_name(uid) or f"کاربر {uid}"
+                fail_details.append(f"{user_name}: {str(e)[:50]}")
+                print(f"خطا در ارسال به {uid}: {e}")
+
+        report = f"📨 *گزارش ارسال پیام به کلاس {class_name}*\n"
+        report += f"👥 تعداد کاربران: {len(user_ids)}\n"
+        report += f"✅ موفق: {success_count}\n"
+        report += f"❌ ناموفق: {fail_count}\n"
+
+        if fail_details:
+            report += "\n⚠️ *خطاها:*\n"
+            for detail in fail_details[:5]:
+                report += f"• {detail}\n"
+            if len(fail_details) > 5:
+                report += f"• و {len(fail_details)-5} خطای دیگر..."
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text(report, reply_markup=None)
+        return
+
+    elif callback_query.data.startswith("cancel_sendmsg_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text("❌ ارسال پیام لغو شد.", reply_markup=None)
+        callback_query.answer("عملیات لغو شد")
+        return
+
     else :
         try:
             data = callback_query.data.split(":")
@@ -618,6 +686,59 @@ def on_message(message):
             return
 
         if uid in admins:
+            if text.startswith("send_message"):
+                parts = text.split('\n', 1)
+                first_line = parts[0].strip()
+                if len(parts) < 2 or not parts[1].strip():
+                    message.reply(
+                        "❌ *فرمت صحیح:*\n"
+                        "`send_message <نام کلاس>`\n"
+                        "`<متن پیام (می‌تواند چند خط باشد)>`\n\n"
+                        "مثال:\n"
+                        "send_message 05\n"
+                        "سلام بر کلاس ۰۵\nجلسه فردا ساعت ۱۰"
+                    )
+                    return
+
+                try:
+                    _, class_name = first_line.split(maxsplit=1)
+                except ValueError:
+                    message.reply("❌ لطفاً نام کلاس را وارد کنید.\nمثال: send_message 05")
+                    return
+
+                class_name = class_name.strip()
+                message_text = parts[1].strip()
+
+                class_id = get_class_id_by_name(class_name)
+                if class_id is None:
+                    message.reply(f"❌ کلاس '{class_name}' یافت نشد.")
+                    return
+
+                user_ids = get_users_in_class(class_id)
+                if not user_ids:
+                    message.reply(f"📭 هیچ کاربری در کلاس '{class_name}' وجود ندارد.")
+                    return
+
+                pending_actions[uid] = {
+                    'kind': 'send_message',
+                    'class_name': class_name,
+                    'message_text': message_text,
+                    'user_ids': user_ids
+                }
+                user_states[uid] = 'confirm_send_message'
+
+                summary = f"📨 *ارسال پیام به کلاس {class_name}*\n\n"
+                summary += f"👥 تعداد گیرندگان: {len(user_ids)} نفر\n"
+                summary += f"📝 متن پیام:\n---\n{message_text}\n---\n\n"
+                summary += "آیا از ارسال این پیام اطمینان دارید؟"
+
+                kb = InlineKeyboard(
+                    [("✅ بله، ارسال شود", f"confirm_sendmsg_{uid}"),
+                     ("❌ خیر، لغو", f"cancel_sendmsg_{uid}")]
+                )
+                message.reply(summary, reply_markup=kb)
+                return
+
             if text.startswith("delete_class"):
                 parts = text.split()
                 if len(parts) != 2:
