@@ -3,37 +3,29 @@ from balethon import Client
 from balethon.objects import InlineKeyboard, LabeledPrice
 from balethon.conditions import successful_payment
 from balethon.event_handlers import PreCheckoutQueryHandler
-import time, traceback, threading, random
+import time, traceback, threading, random, datetime
 from db import *
+from db import stats as get_stats
 
 # ---------- BOT ----------
 with open("bot_id.txt") as f:
     client = Client(f.read().strip())
 
-PROVIDER_TOKEN = "WALLET-wmwVRbPeNx9fihMk"
-admins = {213614271, 1351870827}
+with open("pay_id.txt") as f:
+    PROVIDER_TOKEN = f.read().strip()
+
+with open("admins.txt") as f:
+    admins = {int(x) for x in f.read().splitlines() if x}
+
 
 # ---------- STATE ----------
 try:
     users = set(get_users())
-except Exception as e:
-    print("DB get_users error:", e)
+except:
     users = set()
 
-active_polls = {}     # poll_index -> poll_id
-poll_classes = {}     # poll_index -> class
-poll_types = {}       # poll_index -> type ('score' or 'text')
-poll_counter = 0
-
-user_states = {}      # (uid -> state)
-pending_actions = {}  # uid -> dict of temporary info for actions
-
-polls = show_active_polls()
-for pid, class_, poll_type in polls:
-    active_polls[poll_counter] = pid
-    poll_classes[poll_counter] = class_
-    poll_types[poll_counter] = poll_type
-    poll_counter += 1
+user_states = {}
+pending_actions = {}
 
 with client:
     for admin in admins:
@@ -41,31 +33,40 @@ with client:
             client.send_message(admin, "ربات روشن شد.")
 
 # ---------- SEND POLL ----------
-def send_poll(uid, idx):
-    if idx not in active_polls:
+def send_poll(uid, pid):
+    poll_type = get_poll_type(pid)
+    if not poll_type:
         return
-    pid = active_polls[idx]
-    poll_type = poll_types[idx]
+
     questions = get_questions(pid)
+
     for q_index, q_id, q_text in questions:
         if poll_type == 'score':
-            # Keyboard for score (1-10 in two rows)
             kb = InlineKeyboard(
-                [("1", str(idx * 100 + q_index * 10 + 0)), ("2", str(idx * 100 + q_index * 10 + 1)), ("3", str(idx * 100 + q_index * 10 + 2)), ("4", str(idx * 100 + q_index * 10 + 3)), ("5", str(idx * 100 + q_index * 10 + 4))],
-                [("6", str(idx * 100 + q_index * 10 + 5)), ("7", str(idx * 100 + q_index * 10 + 6)), ("8", str(idx * 100 + q_index * 10 + 7)), ("9", str(idx * 100 + q_index * 10 + 8)), ("10", str(idx * 100 + q_index * 10 + 9))]
+                [("1", f"{pid}:{q_index}:1"),
+                 ("2", f"{pid}:{q_index}:2"),
+                 ("3", f"{pid}:{q_index}:3"),
+                 ("4", f"{pid}:{q_index}:4"),
+                 ("5", f"{pid}:{q_index}:5")],
+                [("6", f"{pid}:{q_index}:6"),
+                 ("7", f"{pid}:{q_index}:7"),
+                 ("8", f"{pid}:{q_index}:8"),
+                 ("9", f"{pid}:{q_index}:9"),
+                 ("10", f"{pid}:{q_index}:10")]
             )
-        elif poll_type == 'text':
+        else:
             kb = InlineKeyboard(
-                [("پاسخ دادن", str(idx * 100 + q_index * 10 + 0))]
+                [("پاسخ دادن", f"{pid}:{q_index}:text")]
             )
+
         try:
             client.send_message(uid, q_text, reply_markup=kb)
         except Exception as e:
-            print(f"send_poll error to {uid}:", e)
+            print("send_poll error:", e)
 
 # ---------- ACTIVATE POLL ----------
+# ---------- ACTIVATE POLL ----------
 def activate_poll(pid):
-    global poll_counter
     try:
         c = conn()
         cur = c.cursor()
@@ -76,26 +77,21 @@ def activate_poll(pid):
     except Exception as e:
         print("activate_poll DB error:", e)
         return
-    class_ = get_poll_class(pid)
-    poll_type = get_poll_type(pid)
-    poll_classes[poll_counter] = class_
-    poll_types[poll_counter] = poll_type
-    active_polls[poll_counter] = pid
 
-    if class_ is None:
-        users_to_send = list(users)
-    else:
-        class_id = get_class_id_by_name(class_)
-        if class_id is None:
-            print(f"Class {class_} not found!")
-            return
-        users_to_send = get_users_in_class(class_id)
+    class_name = get_poll_class(pid)
+    if class_name is None:
+        print(f"⚠️ کلاس '{class_name}' برای نظرسنجی {pid} یافت نشد.")
+        return
+
+    class_id = get_class_id_by_name(class_name)
+    if not class_id:
+        return
+    users_to_send = get_users_in_class(class_id)
 
     for u in users_to_send:
-        send_poll(u, poll_counter)
+        send_poll(u, pid)
 
-    print("Poll activated (idx", poll_counter, "pid", pid, "class", class_, ")")
-    poll_counter += 1
+    print("Poll activated PID:", pid)
 
 # ---------- PAYMENT VALIDATION ----------
 def validate_payment_input(amount_str, class_name, title, description):
@@ -192,12 +188,12 @@ def send_pay_to_class(class_name, amount_rial, title, description):
                 fail_details.append(f"{user_name}: {str(e)[:50]}")
                 print(f"خطا در ارسال به {uid}: {e}")
 
-        result_msg = f"📊 **نتیجه ارسال صورتحساب:**\n\n"
+        result_msg = f"📊 **نتیجه ارسال صورتحساب:**\n"
         result_msg += f"🎯 کلاس: {class_name}\n"
         result_msg += f"👥 تعداد کاربران: {len(users_in_class)}\n"
         result_msg += f"💰 مبلغ هر صورتحساب: {amount_rial // 10:,} تومان\n"
         result_msg += f"✅ موفق: {success_count} کاربر\n"
-        result_msg += f"❌ ناموفق: {fail_count} کاربر\n\n"
+        result_msg += f"❌ ناموفق: {fail_count} کاربر\n"
 
         if fail_details:
             result_msg += "**جزئیات خطاها:**\n"
@@ -214,19 +210,14 @@ def send_pay_to_class(class_name, amount_rial, title, description):
         return False, error_msg
 
 # ---------- STOP POLL ----------
-def stop_poll_idx(idx):
-    pid = active_polls.pop(idx, None)
-    if pid is None:
-        print("stop_poll_idx: no such idx", idx)
-        return False
+def stop_poll_by_pid(pid):
     try:
         stop_poll(pid)
+        print("Poll stopped:", pid)
+        return True
     except Exception as e:
-        print("stop_poll (DB) error:", e)
-    poll_classes.pop(idx, None)
-    poll_types.pop(idx, None)
-    print("poll stopped", idx)
-    return True
+        print("Stop error:", e)
+        return False
 
 # ---------- AUTOSTART ----------
 def autostart_loop():
@@ -329,7 +320,7 @@ def process_successful_payment(client, message):
 @client.on_callback_query()
 def on_callback_query(callback_query):
     print("Callback received! data:", callback_query.data)
-    
+
     if callback_query.data.startswith("confirm_pay_"):
         target_uid = int(callback_query.data.split("_")[2])
 
@@ -359,7 +350,7 @@ def on_callback_query(callback_query):
             pending_actions.pop(target_uid)
 
         callback_query.message.edit_text(
-            f"✅ **عملیات تکمیل شد**\n\n",
+            f"✅ **عملیات تکمیل شد**\n",
             reply_markup=None
         )
         return
@@ -377,57 +368,248 @@ def on_callback_query(callback_query):
             pending_actions.pop(target_uid)
 
         callback_query.message.edit_text(
-            "❌ **عملیات لغو شد**\n\nارسال صورتحساب‌ها کنسل شد.",
+            "❌ **عملیات لغو شد**\nارسال صورتحساب‌ها کنسل شد.",
             reply_markup=None
         )
         callback_query.answer("عملیات لغو شد")
         return
+
+    elif callback_query.data.startswith("confirm_poll_"):
+        target_uid = int(callback_query.data.split("_")[2])
+
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        pending = pending_actions.get(target_uid)
+        if not pending or pending.get('kind') != 'poll':
+            callback_query.answer("اطلاعات نظرسنجی یافت نشد یا منقضی شده!", show_alert=True)
+            return
+
+        callback_query.answer("در حال ایجاد نظرسنجی...")
+
+        poll_type = pending['poll_type']
+        class_name = pending['class_name']
+        ts = pending['ts']
+        q_text = pending['q_text']
+
+        try:
+            pid = create_poll(poll_type, class_name)
+            add_question(pid, 0, q_text)
+
+            if ts is None:
+                activate_poll(pid)
+                target = 'برای همه' if class_name is None else f'برای کلاس {class_name}'
+                result_msg = f"✅ نظرسنجی با موفقیت ایجاد و فعال شد.\n"
+                result_msg += f"🔹 کلاس: {target}\n"
+                result_msg += f"🔹 سوال: {q_text}"
+            else:
+                add_task(ts, pid)
+                target = 'برای همه' if class_name is None else f'برای کلاس {class_name}'
+                dt_str = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                result_msg = f"✅ نظرسنجی با موفقیت ایجاد و برای زمان {dt_str} زمان‌بندی شد.\n"
+                result_msg += f"🔹 کلاس: {target}\n"
+                result_msg += f"🔹 سوال: {q_text}"
+
+            if target_uid in user_states:
+                del user_states[target_uid]
+            if target_uid in pending_actions:
+                pending_actions.pop(target_uid)
+
+            callback_query.message.edit_text(result_msg, reply_markup=None)
+
+        except Exception as e:
+            print("Error in confirm_poll:", e)
+            traceback.print_exc()
+            callback_query.answer("خطا در ایجاد نظرسنجی!", show_alert=True)
+        return
+
+    elif callback_query.data.startswith("cancel_poll_"):
+        target_uid = int(callback_query.data.split("_")[2])
+
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        if target_uid in user_states and user_states[target_uid] == 'confirm_poll':
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text(
+            "❌ **ایجاد نظرسنجی لغو شد**",
+            reply_markup=None
+        )
+        callback_query.answer("عملیات لغو شد")
+        return
+    elif callback_query.data.startswith("confirm_delclass_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        pending = pending_actions.get(target_uid)
+        if not pending or pending.get('kind') != 'delete_class':
+            callback_query.answer("اطلاعات یافت نشد!", show_alert=True)
+            return
+
+        class_name = pending['class_name']
+        callback_query.answer("در حال حذف...")
+
+        success, result_msg = delete_class(class_name)
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text(result_msg, reply_markup=None)
+        return
+
+    elif callback_query.data.startswith("cancel_delclass_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text("❌ عملیات حذف کلاس لغو شد.", reply_markup=None)
+        callback_query.answer("عملیات لغو شد")
+        return
+
+    elif callback_query.data.startswith("confirm_sendmsg_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        pending = pending_actions.get(target_uid)
+        if not pending or pending.get('kind') != 'send_message':
+            callback_query.answer("اطلاعات یافت نشد یا منقضی شده!", show_alert=True)
+            return
+
+        callback_query.answer("در حال ارسال پیام...")
+
+        class_name = pending['class_name']
+        message_text = pending['message_text']
+        user_ids = pending['user_ids']
+
+        success_count = 0
+        fail_count = 0
+        fail_details = []
+
+        for uid in user_ids:
+            try:
+                client.send_message(uid, message_text)
+                success_count += 1
+                time.sleep(0.3)
+            except Exception as e:
+                fail_count += 1
+                user_name = get_user_name(uid) or f"کاربر {uid}"
+                fail_details.append(f"{user_name}: {str(e)[:50]}")
+                print(f"خطا در ارسال به {uid}: {e}")
+
+        report = f"📨 *گزارش ارسال پیام به کلاس {class_name}*\n"
+        report += f"👥 تعداد کاربران: {len(user_ids)}\n"
+        report += f"✅ موفق: {success_count}\n"
+        report += f"❌ ناموفق: {fail_count}\n"
+
+        if fail_details:
+            report += "\n⚠️ *خطاها:*\n"
+            for detail in fail_details[:5]:
+                report += f"• {detail}\n"
+            if len(fail_details) > 5:
+                report += f"• و {len(fail_details)-5} خطای دیگر..."
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text(report, reply_markup=None)
+        return
+
+    elif callback_query.data.startswith("cancel_sendmsg_"):
+        target_uid = int(callback_query.data.split("_")[2])
+        if callback_query.author.id != target_uid:
+            callback_query.answer("این درخواست برای شما نیست!", show_alert=True)
+            return
+
+        if target_uid in user_states:
+            del user_states[target_uid]
+        if target_uid in pending_actions:
+            pending_actions.pop(target_uid)
+
+        callback_query.message.edit_text("❌ ارسال پیام لغو شد.", reply_markup=None)
+        callback_query.answer("عملیات لغو شد")
+        return
+
     else :
         try:
-            v = int(callback_query.data)
-        except Exception:
-            callback_query.answer("دادهٔ نادرست", show_alert=True)
-            return
-
-        idx = v // 100
-        if idx not in active_polls:
-            client.edit_message_text(callback_query.chat_instance, callback_query.message.id, "نظر سنجی منقضی شده است.")
-            return
-
-        pid = active_polls[idx]
-        poll_type = poll_types[idx]
-        q_index = (v % 100) // 10
-        val = v % 10
-
-        q_id = get_question_id(pid, q_index)
-        if q_id is None:
-            callback_query.answer("سوال نامعتبر", show_alert=True)
-            return
-
-        author = callback_query.author
-        uid = author.id
-        username = author.username or ""
-        db_name = get_user_name(uid) or author.first_name or ""
-
-        if poll_type == 'score':
-            score = val + 1
-            try:
-                vote(pid, q_id, str(score), uid, username, db_name)
-                client.edit_message_text(callback_query.chat_instance, callback_query.message.id, "با تشکر، نظر شما ثبت شد.")
-            except Exception as e:
-                print("vote error:", e)
-                callback_query.answer("خطا در ثبت نظر.", show_alert=True)
-        elif poll_type == 'text':
-            if val != 0:
-                callback_query.answer("دادهٔ نادرست", show_alert=True)
+            data = callback_query.data.split(":")
+            if len(data) != 3:
+                callback_query.answer("داده نامعتبر", show_alert=True)
                 return
-            try:
-                client.edit_message_text(callback_query.chat_instance, callback_query.message.id, "لطفا پاسخ خود را ارسال کنید.")
+
+            pid = int(data[0])
+            q_index = int(data[1])
+            value = data[2]
+
+            author = callback_query.author
+            uid = author.id
+
+            poll_type = get_poll_type(pid)
+            if not poll_type:
+                callback_query.answer("نظرسنجی منقضی شده", show_alert=True)
+                return
+
+            if not is_poll_active(pid):
+                callback_query.answer("این نظرسنجی دیگر فعال نیست.", show_alert=True)
+                return
+
+            poll_class = get_poll_class(pid)
+            if poll_class is not None:
+                user_classes = get_user_classes(uid)
+                if poll_class not in user_classes:
+                    callback_query.answer("شما مجاز به پاسخ به این نظرسنجی نیستید.", show_alert=True)
+                    del user_states[uid]
+                    pending_actions.pop(uid, None)
+                    return
+
+            q_id = get_question_id(pid, q_index)
+            if not q_id:
+                callback_query.answer("سوال نامعتبر", show_alert=True)
+                return
+
+            username = author.username or ""
+            db_name = get_user_name(uid) or author.first_name or ""
+
+            if poll_type == 'score':
+                vote(pid, q_id, value, uid, username, db_name)
+                client.edit_message_text(
+                    callback_query.chat_instance,
+                    callback_query.message.id,
+                    "با تشکر، نظر شما ثبت شد."
+                )
+
+            elif poll_type == 'text':
+                if value != "text":
+                    callback_query.answer("داده نامعتبر", show_alert=True)
+                    return
+
+                client.edit_message_text(
+                    callback_query.chat_instance,
+                    callback_query.message.id,
+                    "لطفا پاسخ خود را ارسال کنید."
+                )
                 user_states[uid] = 'waiting_for_text'
                 pending_actions[uid] = {'pid': pid, 'q_id': q_id}
-            except Exception as e:
-                print("edit message error:", e)
-                callback_query.answer("خطا.", show_alert=True)
+        except Exception as e:
+            print("callback error:", e)
 
 # ---------- MESSAGE ----------
 @client.on_message()
@@ -441,6 +623,7 @@ def on_message(message):
         uid = message.author.id
         text = (message.text or "").strip()
         parts = text.split('\n')
+        aline = text.split()
 
         if uid in user_states:
             state = user_states[uid]
@@ -461,10 +644,12 @@ def on_message(message):
                     message.reply("خطا در ثبت نام. لطفاً دوباره امتحان کنید.")
                     return
 
-                for idx in list(active_polls.keys()):
-                    poll_class = poll_classes.get(idx)
-                    if poll_class is None or poll_class in get_user_classes(uid):
-                        send_poll(uid, idx)
+                active = show_active_polls()
+                user_classes = get_user_classes(uid)
+
+                for pid, class_name, poll_type in active:
+                    if class_name is None or class_name in user_classes:
+                        send_poll(uid, pid)
 
                 del user_states[uid]
 
@@ -494,18 +679,120 @@ def on_message(message):
 
             elif uid in admins:
                 pending = pending_actions.get(uid, {})
-                
+
         if uid not in users:
             user_states[uid] = 'waiting_for_name'
             message.reply("شما کاربر جدیدی هستید. لطفاً نام خود را وارد کنید تا ثبت شوید.")
             return
 
         if uid in admins:
+            if text.startswith("send_message"):
+                parts = text.split('\n', 1)
+                first_line = parts[0].strip()
+                if len(parts) < 2 or not parts[1].strip():
+                    message.reply(
+                        "❌ *فرمت صحیح:*\n"
+                        "`send_message <نام کلاس>`\n"
+                        "`<متن پیام (می‌تواند چند خط باشد)>`\n\n"
+                        "مثال:\n"
+                        "send_message 05\n"
+                        "سلام بر کلاس ۰۵\nجلسه فردا ساعت ۱۰"
+                    )
+                    return
+
+                try:
+                    _, class_name = first_line.split(maxsplit=1)
+                except ValueError:
+                    message.reply("❌ لطفاً نام کلاس را وارد کنید.\nمثال: send_message 05")
+                    return
+
+                class_name = class_name.strip()
+                message_text = parts[1].strip()
+
+                class_id = get_class_id_by_name(class_name)
+                if class_id is None:
+                    message.reply(f"❌ کلاس '{class_name}' یافت نشد.")
+                    return
+
+                user_ids = get_users_in_class(class_id)
+                if not user_ids:
+                    message.reply(f"📭 هیچ کاربری در کلاس '{class_name}' وجود ندارد.")
+                    return
+
+                pending_actions[uid] = {
+                    'kind': 'send_message',
+                    'class_name': class_name,
+                    'message_text': message_text,
+                    'user_ids': user_ids
+                }
+                user_states[uid] = 'confirm_send_message'
+
+                summary = f"📨 *ارسال پیام به کلاس {class_name}*\n\n"
+                summary += f"👥 تعداد گیرندگان: {len(user_ids)} نفر\n"
+                summary += f"📝 متن پیام:\n---\n{message_text}\n---\n\n"
+                summary += "آیا از ارسال این پیام اطمینان دارید؟"
+
+                kb = InlineKeyboard(
+                    [("✅ بله، ارسال شود", f"confirm_sendmsg_{uid}"),
+                     ("❌ خیر، لغو", f"cancel_sendmsg_{uid}")]
+                )
+                message.reply(summary, reply_markup=kb)
+                return
+
+            if text.startswith("delete_class"):
+                parts = text.split()
+                if len(parts) != 2:
+                    message.reply("📝 *فرمت:*\n`delete_class <نام کلاس>`\nمثال: delete_class 05")
+                    return
+                class_name = parts[1].strip()
+
+                class_id = get_class_id_by_name(class_name)
+                if not class_id:
+                    message.reply(f"❌ کلاس '{class_name}' وجود ندارد.")
+                    return
+
+                pending_actions[uid] = {'kind': 'delete_class', 'class_name': class_name}
+                user_states[uid] = 'confirm_delete_class'
+
+                summary = f"⚠️ *آیا از حذف کلاس '{class_name}' اطمینان دارید؟*\n\n"
+                summary += "🔸 تمام نظرسنجی‌ها و پاسخ‌های مرتبط با این کلاس\n"
+                summary += "🔸 تمام صورتحساب‌های ارسال شده برای این کلاس\n"
+                summary += "🔸 ارتباط کاربران با این کلاس\n\n"
+                summary += "همگی **برای همیشه حذف** خواهند شد. این عمل قابل بازگشت نیست."
+
+                kb = InlineKeyboard(
+                    [("✅ بله، حذف شود", f"confirm_delclass_{uid}"), ("❌ خیر، لغو", f"cancel_delclass_{uid}")]
+                )
+                message.reply(summary, reply_markup=kb)
+                return
+
+            if text.startswith("remove_from_class"):
+                parts = text.split()
+                if len(parts) != 3:
+                    message.reply(
+                        "📝 *فرمت دستور:*\n"
+                        "remove_from_class <نام کلاس> <آیدی کاربر>\n"
+                        "*مثال:*\n"
+                        "remove_from_class 05 123456789"
+                    )
+                    return
+
+                class_name = parts[1].strip()
+                try:
+                    user_id = int(parts[2].strip())
+                except ValueError:
+                    message.reply("❌ آیدی کاربر باید یک عدد معتبر باشد.")
+                    return
+
+                success, result = remove_user_from_class(class_name, user_id)
+                message.reply(result)
+                return
+
             if text.startswith("create_poll"):
                 if len(text) == len("create_poll"):
                     message.reply("فرمت: create_poll <type> <class> <ts> <question>\n"
                                   "type: score یا text\n"
-                                  "class: نام کلاس یا all\n"
+                                  "class: نام کلاس\n"
                                   "ts: timestamp یونیکس یا . برای شروع فوری\n"
                                   "مثال: create_poll score 05 . ارزیابی امروز چطور بود؟")
                     return
@@ -523,12 +810,11 @@ def on_message(message):
                     message.reply("نوع باید score یا text باشد.")
                     return
 
-                class_name = None if class_input == 'all' else class_input.strip()
-                if class_name:
-                    class_id = get_class_id_by_name(class_name)
-                    if class_id is None:
-                        message.reply(f"کلاس '{class_name}' وجود ندارد. از list_classes استفاده کنید.")
-                        return
+                class_name = class_input.strip()
+                class_id = get_class_id_by_name(class_name)
+                if class_id is None:
+                    message.reply(f"کلاس '{class_name}' وجود ندارد. از list_classes استفاده کنید.")
+                    return
 
                 if ts_input == '.':
                     ts = None
@@ -544,48 +830,53 @@ def on_message(message):
                     message.reply("متن سوال نمی‌تواند خالی باشد.")
                     return
 
-                try:
-                    pid = create_poll(poll_type, class_name)
-                    add_question(pid, 0, q_text)  # question index 0
+                pending_actions[uid] = {
+                    'kind': 'poll',
+                    'poll_type': poll_type,
+                    'class_name': class_name,
+                    'ts': ts,
+                    'q_text': q_text
+                }
+                user_states[uid] = 'confirm_poll'
 
-                    if ts is None:
-                        activate_poll(pid)
-                        target = 'برای همه' if class_name is None else f'برای کلاس {class_name}'
-                        message.reply(f"نظرسنجی {target} شروع شد.\nسوال: {q_text}")
-                    else:
-                        add_task(ts, pid)
-                        target = 'برای همه' if class_name is None else f'برای کلاس {class_name}'
-                        message.reply(f"نظرسنجی {target} زمان‌بندی شد برای {ts}.\nسوال: {q_text}")
+                summary = f"📊 *خلاصه نظرسنجی جدید*\n"
+                summary += f"🔹 نوع: {'امتیازی' if poll_type=='score' else 'متنی'}\n"
+                summary += f"🔹 کلاس: {class_name}\n"
+                if ts is None:
+                    summary += f"🔹 زمان: فوری\n"
+                else:
+                    summary += f"🔹 زمان: {datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')} (timestamp: {ts})\n"
+                summary += f"🔹 سوال: {q_text}\n"
+                summary += "آیا از ایجاد این نظرسنجی اطمینان دارید؟"
 
-                except Exception as e:
-                    print("create_poll one-shot error:", e)
-                    traceback.print_exc()
-                    message.reply("خطا در ایجاد نظرسنجی.")
+                kb = InlineKeyboard(
+                    [("✅ تایید", f"confirm_poll_{uid}"), ("❌ لغو", f"cancel_poll_{uid}")]
+                )
+
+                message.reply(summary, reply_markup=kb)
                 return
-
             if text == "report":
                 try:
-                    global stats
-                    if not active_polls:
+                    polls = show_active_polls()
+                    if not polls:
                         message.reply("📭 *هیچ نظرسنجی فعالی وجود ندارد.*")
                         return
 
                     report_parts = []
 
-                    for idx, pid in active_polls.items():
-                        poll_type = poll_types.get(idx, 'unknown')
-                        class_name = poll_classes.get(idx, 'همه') or 'همه'
+                    for pid, class_name, poll_type in polls:
+                        class_name = class_name or 'همه'
 
-                        poll_stats = stats(pid)
+                        poll_stats = get_stats(pid)
                         questions_list = get_questions(pid)
 
                         if not questions_list:
                             continue
 
-                        poll_report = f"📊 *نظرسنجی #{idx}*\n"
+                        poll_report = f"📊 *نظرسنجی #{pid}*\n"
                         poll_report += f"🏫 کلاس: {class_name}\n"
                         poll_report += f"🔧 نوع: {poll_type}\n"
-                        poll_report += f"🆔 PID: {pid}\n\n"
+                        poll_report += f"🆔 PID: {pid}\n"
 
                         for q_index, q_id, q_text in questions_list:
                             question_data = poll_stats.get(q_id, (0, None))
@@ -595,7 +886,7 @@ def on_message(message):
                                 if response_count > 0 and total_score is not None:
                                     average = total_score / response_count
                                     poll_report += f"*{q_index+1}. {q_text}*\n"
-                                    poll_report += f"   میانگین: {average:.2f} از ۱۰\n"
+                                    poll_report += f"   میانگین: {average:.2f} از 10\n"
                                     poll_report += f"   تعداد پاسخ‌ها: {response_count}\n"
                                 else:
                                     poll_report += f"*{q_index+1}. {q_text}*\n"
@@ -608,14 +899,21 @@ def on_message(message):
 
                         report_parts.append(poll_report)
 
-                    final_report = "📈 *گزارش نظرسنجی‌های فعال*\n\n"
-                    final_report += f"📊 تعداد نظرسنجی‌های فعال: {len(active_polls)}\n"
-                    final_report += "─" * 30 + "\n\n"
+                    try:
+                        count = deactivate_old_polls()
+                        final_report = f"{count} نظرسنجی گذشته حذف شد.\n"
+
+                    except Exception as e:
+                        final_report = "خطا در حذف نظرسنجی های گذشته:" + str(e) + "\n"
+
+                    final_report += "📈 *گزارش نظرسنجی‌های فعال*\n"
+                    final_report += f"📊 تعداد نظرسنجی‌های فعال: {len(polls)}\n"
+                    final_report += "─" * 30 + "\n"
 
                     for i, part in enumerate(report_parts, 1):
                         final_report += part
                         if i < len(report_parts):
-                            final_report += "─" * 30 + "\n\n"
+                            final_report += "─" * 30 + "\n"
 
                     if len(final_report) > 3800:
                         chunks = []
@@ -645,16 +943,16 @@ def on_message(message):
                     message.reply(f"❌ {error_msg}")
                 return
 
-            if parts and parts[0] == "stop":
-                if len(parts) < 2:
-                    message.reply("لطفا شماره idx را وارد کنید.")
+            if aline and aline[0] == "stop":
+                if len(aline) < 1:
+                    message.reply("لطفا شماره pid را وارد کنید.")
                     return
                 try:
-                    idx = int(parts[1])
+                    pid = int(aline[1])
                 except ValueError:
                     message.reply("شماره نامعتبر.")
                     return
-                if stop_poll_idx(idx):
+                if stop_poll_by_pid(pid):
                     message.reply("نظرسنجی متوقف شد.")
                 else:
                     message.reply("لطفا یک شمارهٔ معتبر وارد کنید.")
@@ -685,6 +983,18 @@ def on_message(message):
                 message.reply(msg)
                 return
 
+            if text == "clear":
+                try:
+                    count = deactivate_old_polls()
+                    if count > 0:
+                        message.reply(f"✅ {count} نظرسنجی قدیمی (بیشتر از یک هفته) غیرفعال شدند.")
+                    else:
+                        message.reply("📭 هیچ نظرسنجی فعال قدیمی‌تر از یک هفته یافت نشد.")
+                except Exception as e:
+                    print("clear error:", e)
+                    message.reply("❌ خطا در اجرای دستور clear.")
+                return
+
             if text.startswith("class_users"):
                 if uid not in admins:
                     message.reply("دسترسی denied.")
@@ -706,15 +1016,13 @@ def on_message(message):
                     message.reply(f"📭 هیچ کاربری در کلاس '{class_name}' وجود ندارد.")
                     return
 
-                msg = f"👥 لیست کاربران کلاس '{class_name}':\n\n"
+                msg = f"👥 لیست کاربران کلاس '{class_name}':\n"
                 for i, (user_id, name) in enumerate(users_list, 1):
                     msg += f"{i}. {name}\n"
                     msg += f"   آیدی: {user_id}\n"
 
-                # اضافه کردن آمار
                 msg += f"\n📊 آمار: {len(users_list)} کاربر"
 
-                # اگر پیام طولانی است، آن را به چند قسمت تقسیم کنیم
                 if len(msg) > 3800:
                     chunks = [msg[i:i+3800] for i in range(0, len(msg), 3800)]
                     for chunk in chunks:
@@ -734,7 +1042,13 @@ def on_message(message):
                         status = "فعال" if active else "غیرفعال"
                         class_str = class_ if class_ else "همه"
                         msg += f"- PID: {pid}, نوع: {ptype}, کلاس: {class_str}, وضعیت: {status}, ایجاد: {created}\n"
-                    message.reply(msg)
+                    if len(msg) > 3800:
+                        chunks = [msg[i:i+3800] for i in range(0, len(msg), 3800)]
+                        for chunk in chunks:
+                            message.reply(chunk)
+                    else:
+                        message.reply(msg)
+
                 except Exception as e:
                     print("list_polls error:", e)
                     message.reply("خطا در لیست نظرسنجی‌ها.")
@@ -768,10 +1082,10 @@ def on_message(message):
                         return
 
                     if poll_type == 'text':
-                        current_msg = f"📝 پاسخ‌های متنی نظرسنجی PID {pid}:\n\n"
+                        current_msg = f"📝 پاسخ‌های متنی نظرسنجی PID {pid}:\n"
                         truncate = 300
                     elif poll_type == 'score':
-                        current_msg = f"📊 امتیازات فردی نظرسنجی PID {pid}:\n\n"
+                        current_msg = f"📊 امتیازات فردی نظرسنجی PID {pid}:\n"
                         truncate = None  # No truncation for scores
                     else:
                         message.reply("نوع نظرسنجی نامعتبر.")
@@ -780,7 +1094,7 @@ def on_message(message):
                     last_q_index = -1
                     for q_index, q_text, value, name, username in responses:
                         if q_index != last_q_index:
-                            q_header = f"سوال {q_index + 1}: {q_text[:100]}\n\n"
+                            q_header = f"سوال {q_index + 1}: {q_text[:100]}\n"
                             if len(current_msg + q_header) > 3800:
                                 message.reply(current_msg)
                                 current_msg = q_header
@@ -804,6 +1118,24 @@ def on_message(message):
                     print("view_responses error:", e)
                     traceback.print_exc()
                     message.reply("خطا در دریافت نتایج نظرسنجی.")
+                return
+
+            if text == "users" or text == "list_users":
+                all_users = get_all_users_with_names()
+                if not all_users:
+                    message.reply("هیچ کاربری ثبت نشده است.")
+                    return
+
+                msg = "👥 لیست تمام کاربران:\n"
+                for idx, uid, name in all_users:
+                    msg += f"{idx}. {name} (ID: {uid})\n"
+
+                if len(msg) > 3800:
+                    chunks = [msg[i:i+3800] for i in range(0, len(msg), 3800)]
+                    for chunk in chunks:
+                        message.reply(chunk)
+                else:
+                    message.reply(msg)
                 return
 
             if text == "add_users":
@@ -839,15 +1171,15 @@ def on_message(message):
                     return
 
                 try:
-                    stats = get_payments_stats()
+                    payments_stats = get_payments_stats()
 
                     recent_payments = get_recent_payments(10)
 
-                    report = f"💳 *گزارش پرداخت‌ها*\n\n"
+                    report = f"💳 *گزارش پرداخت‌ها*\n"
                     report += f"📊 آمار کلی:\n"
-                    report += f"• تعداد پرداخت‌ها: {stats['count']}\n"
-                    report += f"• مجموع مبالغ: {stats['total']//10:,} تومان\n"
-                    report += f"• کاربران منحصر به فرد: {stats['unique_users']}\n\n"
+                    report += f"• تعداد پرداخت‌ها: {payments_stats['count']}\n"
+                    report += f"• مجموع مبالغ: {payments_stats['total']//10:,} تومان\n"
+                    report += f"• کاربران منحصر به فرد: {payments_stats['unique_users']}\n"
 
                     if recent_payments:
                         report += f"🕒 *آخرین پرداخت‌ها:*\n"
@@ -907,7 +1239,7 @@ def on_message(message):
                     report = f"📋 *پرداخت‌های کاربر:* {user_name}\n"
                     report += f"🆔 آیدی: {target_id}\n"
                     report += f"💰 مجموع پرداخت‌ها: {total_amount//10:,} تومان\n"
-                    report += f"📊 تعداد تراکنش‌ها: {len(user_payments_list)}\n\n"
+                    report += f"📊 تعداد تراکنش‌ها: {len(user_payments_list)}\n"
 
                     report += "*لیست پرداخت‌ها:*\n"
                     report += "─" * 30 + "\n"
@@ -957,7 +1289,7 @@ def on_message(message):
 
                     daily_stats = get_daily_payments_stats(days=days)
 
-                    report = f"📊 *گزارش پرداخت‌ها ({days} روز گذشته)*\n\n"
+                    report = f"📊 *گزارش پرداخت‌ها ({days} روز گذشته)*\n"
                     report += f"فیلترها:\n"
                     report += f"• بازه زمانی: {days} روز\n"
                     if min_amount:
@@ -966,7 +1298,7 @@ def on_message(message):
                     report += f"• تعداد پرداخت‌ها: {stats['count']}\n"
                     report += f"• مجموع مبالغ: {stats['total']//10:,} تومان\n"
                     report += f"• میانگین هر پرداخت: {stats['total']//stats['count']//10 if stats['count'] > 0 else 0:,} تومان\n"
-                    report += f"• کاربران منحصر به فرد: {stats['unique_users']}\n\n"
+                    report += f"• کاربران منحصر به فرد: {stats['unique_users']}\n"
 
                     if daily_stats:
                         report += "📅 *آمار روزانه:*\n"
@@ -989,13 +1321,13 @@ def on_message(message):
                     stats = get_invoice_stats()
                     grouped_invoices = get_grouped_invoices(limit=15)
 
-                    report = f"🧾 *گزارش صورتحساب‌های ارسال شده (گروه‌بندی شده)*\n\n"
+                    report = f"🧾 *گزارش صورتحساب‌های ارسال شده (گروه‌بندی شده)*\n"
                     report += f"📊 *آمار کلی:*\n"
                     report += f"• کل صورتحساب‌ها: {stats['total']}\n"
                     report += f"• ارسال شده: {stats['sent']}\n"
                     report += f"• پرداخت شده: {stats['paid']} ({stats['paid_amount']//10:,} تومان)\n"
                     report += f"• کاربران منحصر به فرد: {stats['unique_users']}\n"
-                    report += f"• کلاس‌های منحصر به فرد: {stats['unique_classes']}\n\n"
+                    report += f"• کلاس‌های منحصر به فرد: {stats['unique_classes']}\n"
 
                     if grouped_invoices:
                         report += f"🕒 *آخرین صورتحساب‌ها:*\n"
@@ -1060,7 +1392,7 @@ def on_message(message):
 
                     grouped_invoices = get_grouped_invoices(days=days, status=status, class_name=class_name, limit=30)
 
-                    report = f"🔍 *صورتحساب‌های فیلتر شده (گروه‌بندی)*\n\n"
+                    report = f"🔍 *صورتحساب‌های فیلتر شده (گروه‌بندی)*\n"
                     report += f"📊 *فیلترها:*\n"
                     if days:
                         report += f"• روزهای گذشته: {days}\n"
@@ -1069,7 +1401,7 @@ def on_message(message):
                     if class_name:
                         report += f"• کلاس: {class_name}\n"
 
-                    report += f"• تعداد گروه‌ها: {len(grouped_invoices)}\n\n"
+                    report += f"• تعداد گروه‌ها: {len(grouped_invoices)}\n"
 
                     if grouped_invoices:
                         report += f"📋 *نتایج:*\n"
@@ -1117,14 +1449,14 @@ def on_message(message):
                     class_summary = get_class_invoice_summary(class_name)
                     summary = class_summary[0] if class_summary else {}
 
-                    report = f"🏫 *صورتحساب‌های کلاس: {class_name}*\n\n"
+                    report = f"🏫 *صورتحساب‌های کلاس: {class_name}*\n"
                     if summary:
                         report += f"📊 *آمار کلاس:*\n"
                         report += f"• کل صورتحساب‌ها: {summary['total_invoices']}\n"
                         report += f"• پرداخت شده: {summary['paid_count']}\n"
                         report += f"• مبلغ پرداخت شده: {summary['paid_amount']//10:,} تومان\n"
                         report += f"• تعداد کاربران: {summary['total_users']}\n"
-                        report += f"• نرخ پرداخت: {round(summary['paid_count']/summary['total_invoices']*100, 1) if summary['total_invoices'] > 0 else 0}%\n\n"
+                        report += f"• نرخ پرداخت: {round(summary['paid_count']/summary['total_invoices']*100, 1) if summary['total_invoices'] > 0 else 0}%\n"
 
                     user_status = {}
                     for invoice in class_invoices:
@@ -1145,7 +1477,7 @@ def on_message(message):
 
                     unpaid_invoices = [inv for inv in class_invoices if inv['status'] != 'paid'][:10]
                     if unpaid_invoices:
-                        report += f"\n📋 *پرداخت نشده‌ها (۱۰ مورد اول):*\n"
+                        report += f"\n📋 *پرداخت نشده‌ها (10 مورد اول):*\n"
                         for invoice in unpaid_invoices[:10]:
                             user_name = invoice.get('user_name') or f"ID: {invoice['user_id']}"
                             sent_time = datetime.datetime.fromtimestamp(invoice['sent_at']).strftime('%m/%d')
@@ -1175,9 +1507,9 @@ def on_message(message):
                         message.reply("✅ *هیچ صورتحساب پرداخت نشده‌ای در ۳۰ روز گذشته وجود ندارد.*")
                         return
 
-                    report = f"📋 *صورتحساب‌های پرداخت نشده (۳۰ روز گذشته)*\n\n"
+                    report = f"📋 *صورتحساب‌های پرداخت نشده (۳۰ روز گذشته)*\n"
                     report += f"📊 تعداد کل: {len(unpaid_invoices)}\n"
-                    report += f"💰 مجموع مبالغ: {sum(inv['amount'] for inv in unpaid_invoices)//10:,} تومان\n\n"
+                    report += f"💰 مجموع مبالغ: {sum(inv['amount'] for inv in unpaid_invoices)//10:,} تومان\n"
 
                     class_groups = {}
                     for invoice in unpaid_invoices:
@@ -1223,14 +1555,14 @@ def on_message(message):
 
                     class_summaries = get_class_invoice_summary()
 
-                    report = f"📈 *آمار دقیق صورتحساب‌ها*\n\n"
+                    report = f"📈 *آمار دقیق صورتحساب‌ها*\n"
 
                     report += f"📊 *آمار کلی:*\n"
                     report += f"• کل صورتحساب‌ها: {stats['total']}\n"
                     report += f"• نرخ پرداخت: {round(stats['paid']/stats['total']*100, 1) if stats['total'] > 0 else 0}%\n"
                     report += f"• میانگین مبلغ پرداختی: {stats['paid_amount']//stats['paid']//10 if stats['paid'] > 0 else 0:,} تومان\n"
                     report += f"• کاربران منحصر به فرد: {stats['unique_users']}\n"
-                    report += f"• کلاس‌های فعال: {stats['unique_classes']}\n\n"
+                    report += f"• کلاس‌های فعال: {stats['unique_classes']}\n"
 
                     if class_summaries:
                         report += f"🏫 *آمار کلاس‌ها:*\n"
@@ -1280,12 +1612,12 @@ def on_message(message):
 
                 if len(lines) < 5:
                     message.reply(
-                        "📝 *فرمت دستور:*\n\n"
+                        "📝 *فرمت دستور:*\n"
                         "get_money\n"
                         "<مبلغ به تومان>\n"
                         "<نام کلاس>\n"
                         "<عنوان صورتحساب>\n"
-                        "<توضیحات>\n\n"
+                        "<توضیحات>\n"
                         "*مثال:*\n"
                         "get_money\n"
                         "5000\n"
@@ -1300,7 +1632,7 @@ def on_message(message):
                 validation = validate_payment_input(amount_str, class_name, title, description)
 
                 if not validation['valid']:
-                    error_msg = "⚠️ *خطاهای اعتبارسنجی:*\n\n"
+                    error_msg = "⚠️ *خطاهای اعتبارسنجی:*\n"
                     for error in validation['errors']:
                         error_msg += f"• {error}\n"
 
@@ -1313,12 +1645,12 @@ def on_message(message):
                     return
 
                 summary = (
-                    f"✅ *اطلاعات معتبر هستند*\n\n"
+                    f"✅ *اطلاعات معتبر هستند*\n"
                     f"📋 *خلاصه صورتحساب:*\n"
                     f"• مبلغ: {int(validation['amount_rial'] / 10):,} تومان ({validation['amount_rial']:,} ریال)\n"
                     f"• کلاس: {validation['class_name']} ({validation['users_count']} کاربر)\n"
                     f"• عنوان: {validation['title']}\n"
-                    f"• توضیحات: {validation['description']}\n\n"
+                    f"• توضیحات: {validation['description']}\n"
                     f"آیا از ارسال صورتحساب به {validation['users_count']} کاربر مطمئن هستید؟\n"
                     f"✅ تایید\n"
                     f"❌ لغو"
@@ -1388,80 +1720,6 @@ def on_message(message):
 def handle_pre_checkout(client, pre_checkout_query):
     query_id = pre_checkout_query.id
     payload = pre_checkout_query.invoice_payload
-
-    try:
-        parts = payload.split('_')
-
-        if len(parts) >= 4 and parts[0] == "class" and parts[2] == "user":
-            class_name = parts[1]
-            user_id = int(parts[3])
-            timestamp = parts[5] if len(parts) > 5 else None
-
-            print(f"✅ استخراج از payload: کاربر={user_id}, کلاس={class_name}")
-        else:
-            print(f"❌ فرمت payload نامعتبر: {payload}")
-            client.answer_pre_checkout_query(query_id, ok=False, error_message="شناسه پرداخت نامعتبر")
-            return
-    except (ValueError, IndexError) as e:
-        print(f"❌ خطا در تجزیه payload: {e}")
-        client.answer_pre_checkout_query(query_id, ok=False, error_message="خطا در شناسه پرداخت")
-        return
-
-    print(f"🔄 دریافت درخواست پرداخت از کاربر {user_id}")
-    print(f"   Payload: {payload}")
-    print(f"   مبلغ: {pre_checkout_query.total_amount} ریال")
-    print(f"   ارز: {pre_checkout_query.currency}")
-
-    invoice = get_invoice_by_payload(payload)
-    if not invoice:
-        error_msg = "صورتحساب نامعتبر یا یافت نشد."
-        print(f"❌ {error_msg}")
-        client.answer_pre_checkout_query(
-            pre_checkout_query_id=query_id,
-            ok=False,
-            error_message=error_msg
-        )
-        return
-
-    if invoice['status'] != 'sent':
-        error_msg = "این صورتحساب قبلاً پرداخت شده است."
-        print(f"❌ {error_msg}")
-        client.answer_pre_checkout_query(
-            pre_checkout_query_id=query_id,
-            ok=False,
-            error_message=error_msg
-        )
-        return
-
-    if int(user_id) != int(invoice['user_id']):
-        error_msg = "این صورتحساب برای شما صادر نشده است."
-        print(f"❌ {error_msg}")
-        client.answer_pre_checkout_query(
-            pre_checkout_query_id=query_id,
-            ok=False,
-            error_message=error_msg
-        )
-        return
-
-    if pre_checkout_query.total_amount != invoice['amount']:
-        error_msg = f"مبلغ پرداخت ({pre_checkout_query.total_amount} ریال) با صورتحساب ({invoice['amount']} ریال) مطابقت ندارد."
-        print(f"❌ {error_msg}")
-        client.answer_pre_checkout_query(
-            pre_checkout_query_id=query_id,
-            ok=False,
-            error_message="مبلغ پرداخت با صورتحساب مطابقت ندارد."
-        )
-        return
-
-    if pre_checkout_query.currency != "IRR":
-        error_msg = f"ارز پرداخت ({pre_checkout_query.currency}) نامعتبر است. باید IRR باشد."
-        print(f"❌ {error_msg}")
-        client.answer_pre_checkout_query(
-            pre_checkout_query_id=query_id,
-            ok=False,
-            error_message="ارز پرداخت نامعتبر است."
-        )
-        return
 
     try:
         client.answer_pre_checkout_query(
