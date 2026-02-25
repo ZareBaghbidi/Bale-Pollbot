@@ -256,7 +256,12 @@ def on_callback_query(callback_query):
 
         for uid in user_ids:
             try:
-                client.send_message(uid, message_text)
+                user_name = get_user_name(uid) or "کاربر"
+                custom_text = message_text.replace("{name}", user_name)
+                custom_text = custom_text.replace("{id}", str(uid))
+
+                client.send_message(uid, custom_text)
+
                 success_count += 1
                 time.sleep(0.3)
             except Exception as e:
