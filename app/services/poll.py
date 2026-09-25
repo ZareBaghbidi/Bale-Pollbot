@@ -1,0 +1,81 @@
+from balethon.objects import InlineKeyboard
+
+from app.db.cruds.classes import get_class_id_by_name, get_users_in_class
+from app.db.cruds.polls import do_activate_poll, get_poll_class, get_poll_type, stop_poll
+from app.db.cruds.questions import get_questions
+
+
+async def send_poll(client, uid, pid):
+    poll_type = get_poll_type(pid)
+    if not poll_type:
+        return
+
+    questions = get_questions(pid)
+
+    for q_index, q_id, q_text in questions:
+        if poll_type == 'score':
+            # Longer message bodies give Bale enough room to render the full
+            # rating keyboard when the original question is very short.
+            display_text = q_text
+            if len(q_text.strip()) < 120:
+                display_text = (
+                    f"{q_text}\n\n"
+                    "برای ثبت امتیاز، یکی از دکمه‌های زیر را انتخاب کن. "
+                    "عدد ۱ کمترین و ۱۰ بیشترین امتیاز است."
+                )
+            kb = InlineKeyboard(
+                [("1", f"{pid}:{q_index}:1"),
+                 ("2", f"{pid}:{q_index}:2"),
+                 ("3", f"{pid}:{q_index}:3"),
+                 ("4", f"{pid}:{q_index}:4"),
+                 ("5", f"{pid}:{q_index}:5")],
+                [("6", f"{pid}:{q_index}:6"),
+                 ("7", f"{pid}:{q_index}:7"),
+                 ("8", f"{pid}:{q_index}:8"),
+                 ("9", f"{pid}:{q_index}:9"),
+                 ("10", f"{pid}:{q_index}:10")]
+            )
+        else:
+            display_text = q_text
+            kb = InlineKeyboard(
+                [("پاسخ دادن", f"{pid}:{q_index}:text")]
+            )
+
+        try:
+            await client.send_message(uid, display_text, reply_markup=kb)
+        except Exception as e:
+            print("send_poll error:", e)
+
+# ---------- ACTIVATE POLL ----------
+
+
+async def activate_poll(client, pid):
+    do_activate_poll(pid)
+
+    class_name = get_poll_class(pid)
+    if class_name is None:
+        print(f"⚠️ کلاس '{class_name}' برای نظرسنجی {pid} یافت نشد.")
+        return
+
+    class_id = get_class_id_by_name(class_name)
+    if not class_id:
+        return
+    users_to_send = get_users_in_class(class_id)
+
+    for u in users_to_send:
+        await send_poll(client, u, pid)
+
+    print("Poll activated PID:", pid)
+
+
+# ---------- STOP POLL ----------
+
+
+async def stop_poll_by_pid(pid):
+    try:
+        if stop_poll(pid):
+            print("Poll stopped:", pid)
+            return True
+    except Exception as e:
+        print("Stop error:", e)
+    return False

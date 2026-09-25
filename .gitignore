@@ -1,0 +1,16 @@
+# Local credentials and backups
+.env
+.env.*
+!app/.env.bak
+
+# Local data and generated files
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+*.xls
+*.csv
+__pycache__/
+*.py[cod]
+venv/
+.idea/
