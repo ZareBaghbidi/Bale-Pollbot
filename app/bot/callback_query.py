@@ -13,6 +13,8 @@ from app.db.cruds.users import get_user_classes, get_user_name
 from app.db.cruds.votes import vote
 from app.services.patment import send_pay_to_class
 from app.bot.handlers.member_handlers import handle_member_callback
+from app.bot.handlers.invoice_handlers import handle_invoice_deactivation_callback
+from app.bot.handlers.invoice_handlers import handle_invoice_deactivation_callback
 from app.bot.handlers.class_handlers import _send_message_cancel_keyboard
 from app.services.poll import activate_poll
 from app.bot.poll_calendar import (
@@ -834,6 +836,10 @@ async def on_callback_query(callback_query, settings, client, pending_actions, u
     if callback_query.data.startswith("sm:"):
         await send_message_wizard_callback(
             callback_query, settings, pending_actions, user_states)
+        return
+
+    if callback_query.data.startswith("ivd:"):
+        await handle_invoice_deactivation_callback(callback_query, settings)
         return
 
     if callback_query.data.startswith("user:"):

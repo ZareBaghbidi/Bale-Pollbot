@@ -31,7 +31,7 @@ from app.bot.messages import ADMIN_HELP, OWNER_HELP
 
 COMMAND_NAMES = {
     "help", "unanswered_polls", "unpaid_invoices", "change_name", "message_owner",
-    "report_bug",
+    "report_bug", "deactivate_invoice",
     "roles", "add_admin", "remove_admin", "create_poll", "list_classes",
     "users", "list_users", "add_users", "create_class", "class_users",
     "remove_from_class", "delete_class", "send_message", "stop", "clear",
@@ -41,12 +41,19 @@ COMMAND_NAMES = {
     "invoices_unpaid", "invoice_stats",
 }
 
+MEMBER_COMMANDS = {
+    "help", "unanswered_polls", "unpaid_invoices", "change_name",
+    "message_owner", "report_bug",
+}
+ADMIN_COMMANDS = MEMBER_COMMANDS | {"create_poll", "list_classes"}
+
 HELP_BUTTON_COMMANDS = {
     "📊 نظرسنجی پاسخ‌داده‌نشده": "unanswered_polls",
     "🧾 صورتحساب پرداخت‌نشده": "unpaid_invoices",
     "✏️ تغییر نام": "change_name",
     "🐞 گزارش باگ": "report_bug",
     "❔ راهنما": "help",
+    "⛔ غیرفعال‌سازی صورتحساب": "deactivate_invoice",
     "📊 نظرسنجی‌های فعالِ بی‌پاسخ": "unanswered_polls",
     "🧾 صورتحساب‌های پرداخت‌نشده": "unpaid_invoices",
     "✏️ تغییر نام کاربری": "change_name",
@@ -60,10 +67,53 @@ HELP_BUTTON_COMMANDS = {
 def _normalize_command(text):
     if text.startswith("/"):
         remaining = text[1:].strip()
-        command = remaining.split(maxsplit=1)[0] if remaining else ""
+        parts = remaining.split(maxsplit=1)
+        command = parts[0].split("@", maxsplit=1)[0] if parts else ""
         if command in COMMAND_NAMES:
-            return text[1:]
+            return command + (" " + parts[1] if len(parts) > 1 else "")
     return text
+
+
+def _command_name(text):
+    """Return a known command at the start of a message, if present."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    token = stripped.split(maxsplit=1)[0]
+    if token.startswith("/"):
+        token = token[1:]
+    token = token.split("@", maxsplit=1)[0]
+    return token if token in COMMAND_NAMES else None
+
+
+def _can_use_command(command, is_owner, is_admin):
+    if is_owner:
+        return True
+    if is_admin:
+        return command in ADMIN_COMMANDS
+    return command in MEMBER_COMMANDS
+
+
+async def _notify_owners_of_unrecognized_message(uid, text, message, client,
+                                                 owners):
+    display_name = get_user_name(uid) or message.author.first_name or "کاربر"
+    header = (
+        "⚠️ پیام خارج از دستورهای ربات\n"
+        f"👤 نام: {display_name}\n"
+        f"🆔 شناسهٔ کاربر: {uid}\n\n"
+    )
+    body = text.strip() or "(متن خالی)"
+    body = body[:3500 - len(header)]
+    notification = header + body
+    for owner_id in sorted(owners - {uid}):
+        try:
+            await client.send_message(owner_id, notification)
+        except Exception as exc:
+            print(f"خطا در گزارش پیام خارج از دستور کاربر {uid} به اونر {owner_id}: {exc}")
+    await message.reply(
+        f"{display_name}، این پیام با هیچ‌کدام از دستورهای ربات تطبیق نداشت."
+        " برای دیدن راهنما /help را بفرستید."
+    )
 
 
 async def on_message(message, settings, client, user_states, pending_actions, all_users):
@@ -75,6 +125,14 @@ async def on_message(message, settings, client, user_states, pending_actions, al
 
         uid = message.author.id
         raw_text = (message.text or "").strip()
+        active_input_command = _command_name(_normalize_command(raw_text))
+        if active_input_command:
+            active_is_owner = uid in settings.owners
+            active_is_admin = uid in settings.admins
+            if not _can_use_command(
+                    active_input_command, active_is_owner, active_is_admin):
+                await message.reply("⛔ شما برای استفاده از این دستور دسترسی ندارید.")
+                return
         text_states = {
             "waiting_for_name", "waiting_for_rename", "waiting_for_text",
             "waiting_for_owner_message", "waiting_for_bug_report",
@@ -120,7 +178,10 @@ async def on_message(message, settings, client, user_states, pending_actions, al
 
                 await message.reply(
                     "نام شما ثبت شد. حالا می‌توانید در نظرسنجی شرکت کنید.",
-                    reply_markup=member_help_keyboard(),
+                    reply_markup=member_help_keyboard(
+                        "✉️ پیام به اونرها" if uid in settings.owners else "✉️ پیام به ادمین",
+                        owner_controls=uid in settings.owners,
+                    ),
                 )
                 return
 
@@ -194,15 +255,44 @@ async def on_message(message, settings, client, user_states, pending_actions, al
         is_owner = uid in settings.owners
         is_admin = uid in settings.admins
 
+        command = _command_name(text)
+        if command and not _can_use_command(command, is_owner, is_admin):
+            await message.reply("⛔ شما برای استفاده از این دستور دسترسی ندارید.")
+            return
+
+        if text == "help":
+            if is_owner:
+                await message.reply(
+                    OWNER_HELP, reply_markup=member_help_keyboard(
+                        "✉️ پیام به اونرها", owner_controls=True))
+            elif is_admin:
+                await message.reply(
+                    ADMIN_HELP, reply_markup=member_help_keyboard(
+                        "✉️ پیام به اونرها"))
+            else:
+                await handle_member_message(
+                    uid, text, message, client, user_states, settings.owners,
+                    settings.developers)
+            return
+
+        if command is None and text:
+            await _notify_owners_of_unrecognized_message(
+                uid, text, message, client, settings.owners)
+            return
+
         if uid not in all_users or not get_user_name(uid):
             user_states[uid] = 'waiting_for_name'
             await message.reply(
                 "برای ثبت نام و شرکت در نظرسنجی، لطفاً نامت را بفرست.")
             return
 
-        if text != "help" and await handle_member_message(
+        if await handle_member_message(
                 uid, text, message, client, user_states, settings.owners,
                 settings.developers):
+            return
+
+        if text == "deactivate_invoice":
+            await invoice_hadnler(uid, text, message, settings.owners)
             return
 
         if is_owner:
@@ -287,21 +377,14 @@ async def on_message(message, settings, client, user_states, pending_actions, al
 
         if is_owner or is_admin:
             if is_admin and not is_owner:
-                if text == "help":
-                    await message.reply(
-                        ADMIN_HELP, reply_markup=member_help_keyboard(
-                            "✉️ پیام به اونرها"))
-                elif text == "list_classes":
+                if text == "list_classes":
                     await class_hadnler(uid, text, message, pending_actions,
                                        user_states, settings.admins)
-                elif text.startswith("create_poll"):
+                    return
+                elif text == "create_poll" or text.startswith("create_poll "):
                     await poll_hadnler(uid, text, message, pending_actions,
                                        user_states, text.split())
-                else:
-                    await message.reply(
-                        "دسترسی شما محدود است. فقط دستورهای /create_poll و /list_classes مجاز هستند."
-                    )
-                return
+                    return
 
             if await class_hadnler(uid, text, message, pending_actions,
                                    user_states, settings.owners):
@@ -414,25 +497,13 @@ async def on_message(message, settings, client, user_states, pending_actions, al
 
                 return
 
-        if text == "help":
-            await message.reply(
-                OWNER_HELP, reply_markup=member_help_keyboard(
-                    "✉️ پیام به اونرها"))
-            return
-
         if await handle_member_message(
                 uid, text, message, client, user_states, settings.owners,
                 settings.developers):
             return
 
-        display_name = get_user_name(uid) or message.author.first_name or "کاربر"
-        await message.reply(display_name + " رو نمی‌شناسم!🫣")
-        if not uid == 213614271:
-            await client.send_message(
-                213614271, f"{display_name} این پیام رو داد:\n{text}")
-        if not uid == 1351870827 and not uid == 213614271:
-            await client.send_message(
-                1351870827, f"{display_name} این پیام رو داد:\n{text}")
+        await _notify_owners_of_unrecognized_message(
+            uid, text, message, client, settings.owners)
 
     except Exception as e:
         print("msg_handler top-level error:", e)

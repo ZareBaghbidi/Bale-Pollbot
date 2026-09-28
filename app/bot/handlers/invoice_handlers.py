@@ -1,11 +1,154 @@
 import datetime
+from balethon.objects import InlineKeyboard
 from app.db.cruds.invoices import (
+    deactivate_invoice,
+    get_active_invoice,
+    get_active_invoice_count,
+    get_active_invoices,
     get_all_invoices,
     get_class_invoice_summary,
     get_grouped_invoices,
     get_invoice_stats,
     get_unpaid_invoices,
 )
+
+
+INVOICE_DEACTIVATION_PAGE_SIZE = 8
+
+
+def _invoice_deactivation_keyboard(uid, invoices, page, total):
+    rows = []
+    for invoice in invoices:
+        title = (invoice.get("title") or "صورتحساب")[:16]
+        class_name = (invoice.get("class_name") or "عمومی")[:10]
+        label = f"⛔ #{invoice['id']} {title} / {class_name} / {invoice['user_id']}"
+        rows.append([(label, f"ivd:select:{uid}:{invoice['id']}:{page}")])
+
+    navigation = []
+    if page > 0:
+        navigation.append(("⬅️ قبلی", f"ivd:list:{uid}:{page - 1}"))
+    if (page + 1) * INVOICE_DEACTIVATION_PAGE_SIZE < total:
+        navigation.append(("بعدی ➡️", f"ivd:list:{uid}:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([("بستن", f"ivd:close:{uid}")])
+    return InlineKeyboard(*rows)
+
+
+async def _show_active_invoice_list(uid, message, page=0, edit=False):
+    total = get_active_invoice_count()
+    if not total:
+        text = "صورتحساب فعالی برای غیرفعال‌کردن وجود ندارد."
+        if edit:
+            await message.edit_text(text, reply_markup=None)
+        else:
+            await message.reply(text)
+        return
+
+    last_page = (total - 1) // INVOICE_DEACTIVATION_PAGE_SIZE
+    page = min(max(page, 0), last_page)
+    offset = page * INVOICE_DEACTIVATION_PAGE_SIZE
+    invoices = get_active_invoices(
+        offset=offset, limit=INVOICE_DEACTIVATION_PAGE_SIZE)
+    text = (
+        f"🧾 صورتحساب‌های فعال ({total} مورد)\n"
+        "برای انتخاب و غیرفعال‌کردن، دکمهٔ صورتحساب را بزنید.\n"
+        f"صفحهٔ {page + 1} از {last_page + 1}"
+    )
+    keyboard = _invoice_deactivation_keyboard(uid, invoices, page, total)
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard)
+    else:
+        await message.reply(text, reply_markup=keyboard)
+
+
+async def _handle_invoice_deactivation(uid, message, owners):
+    if uid not in owners:
+        await message.reply("غیرفعال‌کردن صورتحساب فقط برای اونرها امکان‌پذیر است.")
+        return
+    await _show_active_invoice_list(uid, message)
+
+
+async def handle_invoice_deactivation_callback(callback_query, settings):
+    parts = callback_query.data.split(":")
+    if len(parts) < 3:
+        await callback_query.answer("درخواست نامعتبر است.", show_alert=True)
+        return
+    action = parts[1]
+    try:
+        uid = int(parts[2])
+    except ValueError:
+        await callback_query.answer("درخواست نامعتبر است.", show_alert=True)
+        return
+    if callback_query.author.id != uid or uid not in settings.owners:
+        await callback_query.answer("این گزینه فقط برای اونرهاست.", show_alert=True)
+        return
+
+    if action == "close" and len(parts) == 3:
+        await callback_query.answer("فهرست بسته شد.")
+        await callback_query.message.edit_text(
+            "فهرست صورتحساب‌های فعال بسته شد.", reply_markup=None)
+        return
+
+    if action == "list" and len(parts) == 4:
+        try:
+            page = int(parts[3])
+        except ValueError:
+            await callback_query.answer("شمارهٔ صفحه نامعتبر است.", show_alert=True)
+            return
+        await callback_query.answer(" ")
+        await _show_active_invoice_list(
+            uid, callback_query.message, page, edit=True)
+        return
+
+    if action in ("select", "confirm") and len(parts) == 5:
+        try:
+            invoice_id = int(parts[3])
+            page = int(parts[4])
+        except ValueError:
+            await callback_query.answer("شناسهٔ صورتحساب نامعتبر است.", show_alert=True)
+            return
+        invoice = get_active_invoice(invoice_id)
+        if invoice is None:
+            await callback_query.answer(
+                "این صورتحساب دیگر فعال نیست.", show_alert=True)
+            await _show_active_invoice_list(
+                uid, callback_query.message, page, edit=True)
+            return
+
+        if action == "select":
+            class_name = invoice.get("class_name") or "عمومی"
+            user_name = invoice.get("user_name") or invoice["user_id"]
+            summary = (
+                f"صورتحساب #{invoice_id}\n"
+                f"عنوان: {invoice['title']}\n"
+                f"کلاس: {class_name}\n"
+                f"کاربر: {user_name} (شناسه: {invoice['user_id']})\n"
+                f"مبلغ: {invoice['amount'] // 10:,} تومان\n\n"
+                "با تأیید، صورتحساب از فهرست پرداخت‌نشده حذف می‌شود و یادآوری آن متوقف خواهد شد."
+            )
+            keyboard = InlineKeyboard(
+                [("✅ تأیید غیرفعال‌سازی", f"ivd:confirm:{uid}:{invoice_id}:{page}")],
+                [("↩️ بازگشت به فهرست", f"ivd:list:{uid}:{page}")],
+            )
+            await callback_query.answer("صورتحساب انتخاب شد.")
+            await callback_query.message.edit_text(summary, reply_markup=keyboard)
+            return
+
+        if not deactivate_invoice(invoice_id):
+            await callback_query.answer(
+                "صورتحساب غیرفعال نشد؛ احتمالاً قبلاً تغییر کرده است.",
+                show_alert=True,
+            )
+            return
+        await callback_query.answer("صورتحساب غیرفعال شد.")
+        await callback_query.message.edit_text(
+            f"✅ صورتحساب «{invoice['title']}» برای کاربر {invoice['user_id']} غیرفعال شد.",
+            reply_markup=None,
+        )
+        return
+
+    await callback_query.answer("این گزینه معتبر نیست یا منقضی شده است.", show_alert=True)
 
 
 async def _reply_long(message, text, limit=3800):
@@ -35,7 +178,8 @@ async def _handle_invoices(uid, message, admins):
         report = f"🧾 *گزارش صورتحساب‌های ارسال شده (گروه‌بندی شده)*\n"
         report += f"📊 *آمار کلی:*\n"
         report += f"• کل صورتحساب‌ها: {stats['total']}\n"
-        report += f"• ارسال شده: {stats['sent']}\n"
+        report += f"• فعال / ارسال شده: {stats['sent']}\n"
+        report += f"• غیرفعال‌شده: {stats['cancelled']}\n"
         report += f"• پرداخت شده: {stats['paid']} ({stats['paid_amount']//10:,} تومان)\n"
         report += f"• کاربران منحصر به فرد: {stats['unique_users']}\n"
         report += f"• کلاس‌های منحصر به فرد: {stats['unique_classes']}\n"
@@ -49,6 +193,8 @@ async def _handle_invoices(uid, message, admins):
                 title = group['title']
                 amount = group['amount']
                 total_count = group['total_count']
+                sent_count = group['sent_count']
+                cancelled_count = group['cancelled_count']
                 paid_count = group['paid_count']
                 paid_amount = group['paid_amount']
                 last_sent = datetime.datetime.fromtimestamp(
@@ -57,7 +203,8 @@ async def _handle_invoices(uid, message, admins):
                 report += f"{i}. 🏫 *{class_name}*\n"
                 report += f"   📝 {title}\n"
                 report += f"   💰 {amount//10:,} تومان\n"
-                report += f"   📤 ارسال شده: {total_count}\n"
+                report += f"   📤 فعال / ارسال شده: {sent_count}\n"
+                report += f"   ⛔ غیرفعال‌شده: {cancelled_count}\n"
                 report += f"   ✅ پرداخت شده: {paid_count}\n"
                 report += f"   💳 مبلغ پرداختی: {paid_amount//10:,} تومان\n"
                 report += f"   ⏰ آخرین ارسال: {last_sent}\n"
@@ -121,11 +268,12 @@ async def _handle_invoices_filter(uid, text, message, admins):
                 amount = group['amount']
                 total_count = group['total_count']
                 paid_count = group['paid_count']
+                cancelled_count = group['cancelled_count']
                 last_sent = datetime.datetime.fromtimestamp(
                     group['last_sent']).strftime('%m/%d')
 
                 report += f"{i}. 🏫 {class_name} | 📝 {title}\n"
-                report += f"   💰 {amount//10:,} تومان | 📤 {total_count} | ✅ {paid_count}\n"
+                report += f"   💰 {amount//10:,} تومان | کل {total_count} | ✅ {paid_count} | ⛔ {cancelled_count}\n"
                 report += f"   ⏰ {last_sent}\n"
 
         if len(report) > 3800:
@@ -248,6 +396,10 @@ async def _handle_invoice_stats(uid, message, admins):
 
 
 async def invoice_hadnler(uid, text, message, admins):
+    if text == "deactivate_invoice":
+        await _handle_invoice_deactivation(uid, message, admins)
+        return True
+
     if text == "invoices":
         await _handle_invoices(uid, message, admins)
         return True

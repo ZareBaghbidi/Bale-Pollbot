@@ -74,6 +74,7 @@ OWNER_HELP = (
     "• /get_money → ساخت صورتحساب (فقط اونر) و انتخاب بازهٔ یادآوری\n"
     "• /payments، /user_payments <شناسه>، /payments_filter days=7 min=5000\n"
     "• /invoices، /invoices_filter days=7 status=paid class=05\n"
-    "• /invoices_class <نام>، /invoices_unpaid، /invoice_stats\n\n"
+    "• /invoices_class <نام>، /invoices_unpaid، /invoice_stats\n"
+    "• /deactivate_invoice → انتخاب و غیرفعال‌کردن صورتحساب فعال\n\n"
     "• /help → نمایش این راهنما"
 )

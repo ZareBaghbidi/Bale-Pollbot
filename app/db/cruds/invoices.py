@@ -15,6 +15,10 @@ __all__ = [
     "get_grouped_invoices",
     "get_user_unpaid_invoices",
     "get_user_unpaid_invoice",
+    "get_active_invoices",
+    "get_active_invoice_count",
+    "get_active_invoice",
+    "deactivate_invoice",
     "get_due_invoice_reminders",
     "schedule_next_invoice_reminder",
 ]
@@ -84,6 +88,51 @@ def get_all_invoices(days=None, status=None, class_name=None, limit=50):
         return [dict(r[0].__dict__, user_name=r[1], telegram_charge_id=r[2]) for r in rows]
 
 
+def get_active_invoices(offset=0, limit=8):
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(Invoice, User.name.label("user_name"))
+            .outerjoin(User, Invoice.user_id == User.chat_id)
+            .where(Invoice.status == "sent")
+            .order_by(Invoice.sent_at.desc(), Invoice.id.desc())
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return [dict(row[0].__dict__, user_name=row[1]) for row in rows]
+
+
+def get_active_invoice_count():
+    with SessionLocal() as session:
+        return session.execute(
+            select(func.count()).select_from(Invoice)
+            .where(Invoice.status == "sent")
+        ).scalar_one()
+
+
+def get_active_invoice(invoice_id):
+    with SessionLocal() as session:
+        row = session.execute(
+            select(Invoice, User.name.label("user_name"))
+            .outerjoin(User, Invoice.user_id == User.chat_id)
+            .where(
+                Invoice.id == invoice_id,
+                Invoice.status == "sent",
+            )
+        ).first()
+        return dict(row[0].__dict__, user_name=row[1]) if row else None
+
+
+def deactivate_invoice(invoice_id):
+    with SessionLocal() as session:
+        result = session.execute(
+            update(Invoice)
+            .where(Invoice.id == invoice_id, Invoice.status == "sent")
+            .values(status="cancelled", next_reminder_at=None)
+        )
+        session.commit()
+        return result.rowcount > 0
+
+
 def get_invoice_stats():
     with SessionLocal() as session:
         row = session.execute(
@@ -91,6 +140,8 @@ def get_invoice_stats():
                 func.count().label("total"),
                 func.sum(case((Invoice.status == "sent", 1), else_=0)).label(
                     "sent_count"),
+                func.sum(case((Invoice.status == "cancelled", 1), else_=0)).label(
+                    "cancelled_count"),
                 func.sum(case((Invoice.status == "paid", 1), else_=0)).label(
                     "paid_count"),
                 func.sum(case((Invoice.status == "paid", Invoice.amount), else_=0)).label(
@@ -105,12 +156,21 @@ def get_invoice_stats():
             return {
                 "total": row.total or 0,
                 "sent": row.sent_count or 0,
+                "cancelled": row.cancelled_count or 0,
                 "paid": row.paid_count or 0,
                 "paid_amount": row.paid_amount or 0,
                 "unique_users": row.unique_users or 0,
                 "unique_classes": row.unique_classes or 0
             }
-        return {"total": 0, "sent": 0, "paid": 0, "paid_amount": 0, "unique_users": 0, "unique_classes": 0}
+        return {
+            "total": 0,
+            "sent": 0,
+            "cancelled": 0,
+            "paid": 0,
+            "paid_amount": 0,
+            "unique_users": 0,
+            "unique_classes": 0,
+        }
 
 
 def get_class_invoice_summary(class_name=None):
@@ -138,7 +198,7 @@ def get_unpaid_invoices(days=None):
         query = (
             select(Invoice, User.name.label("user_name"))
             .outerjoin(User, Invoice.user_id == User.chat_id)
-            .where(Invoice.status != "paid")
+            .where(Invoice.status == "sent")
         )
         if days:
             timestamp_limit = int(
@@ -153,7 +213,7 @@ def get_user_unpaid_invoices(user_id):
     with SessionLocal() as session:
         rows = session.execute(
             select(Invoice)
-            .where(Invoice.user_id == user_id, Invoice.status != "paid")
+            .where(Invoice.user_id == user_id, Invoice.status == "sent")
             .order_by(Invoice.sent_at.desc(), Invoice.id.desc())
         ).scalars().all()
         return [dict(row.__dict__) for row in rows]
@@ -165,7 +225,7 @@ def get_user_unpaid_invoice(user_id, invoice_id):
             select(Invoice).where(
                 Invoice.id == invoice_id,
                 Invoice.user_id == user_id,
-                Invoice.status != "paid",
+                Invoice.status == "sent",
             )
         ).scalar_one_or_none()
         return dict(row.__dict__) if row else None
@@ -177,7 +237,7 @@ def get_due_invoice_reminders(now_ts=None):
         rows = session.execute(
             select(Invoice)
             .where(
-                Invoice.status != "paid",
+                Invoice.status == "sent",
                 Invoice.reminder_interval_days.is_not(None),
                 Invoice.next_reminder_at.is_not(None),
                 Invoice.next_reminder_at <= now_ts,
@@ -191,7 +251,7 @@ def schedule_next_invoice_reminder(invoice_id, next_reminder_at):
     with SessionLocal() as session:
         result = session.execute(
             update(Invoice)
-            .where(Invoice.id == invoice_id, Invoice.status != "paid")
+            .where(Invoice.id == invoice_id, Invoice.status == "sent")
             .values(next_reminder_at=next_reminder_at)
         )
         session.commit()
@@ -205,6 +265,10 @@ def get_grouped_invoices(days=None, status=None, class_name=None, limit=50):
             Invoice.title,
             Invoice.amount,
             func.count().label("total_count"),
+            func.sum(case((Invoice.status == "sent", 1), else_=0)
+                     ).label("sent_count"),
+            func.sum(case((Invoice.status == "cancelled", 1), else_=0)
+                     ).label("cancelled_count"),
             func.sum(case((Invoice.status == "paid", 1), else_=0)
                      ).label("paid_count"),
             func.sum(case((Invoice.status == "paid", Invoice.amount), else_=0)).label(

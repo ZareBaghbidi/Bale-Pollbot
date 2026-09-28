@@ -12,12 +12,18 @@ from app.services.poll import send_poll
 from app.services.patment import send_invoice_to_user
 
 
-def member_help_keyboard(message_owner_label="✉️ پیام به ادمین"):
-    return ReplyKeyboard(
+def member_help_keyboard(message_owner_label="✉️ پیام به ادمین",
+                        owner_controls=False):
+    rows = [
         ["📊 نظرسنجی پاسخ‌داده‌نشده", "🧾 صورتحساب پرداخت‌نشده"],
         [message_owner_label, "🐞 گزارش باگ"],
         ["✏️ تغییر نام"],
-        ["❔ راهنما"],
+    ]
+    if owner_controls:
+        rows.append(["⛔ غیرفعال‌سازی صورتحساب"])
+    rows.append(["❔ راهنما"])
+    return ReplyKeyboard(
+        *rows,
         resize=True,
         one_time=False,
         is_persistent=True,
