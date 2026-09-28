@@ -12,11 +12,17 @@ __all__ = [
     "get_invoice_stats",
     "get_class_invoice_summary",
     "get_unpaid_invoices",
-    "get_grouped_invoices"
+    "get_grouped_invoices",
+    "get_user_unpaid_invoices",
+    "get_user_unpaid_invoice",
+    "get_due_invoice_reminders",
+    "schedule_next_invoice_reminder",
 ]
 
 
-def save_invoice(user_id, class_name, amount, title, description, payload, provider_token):
+def save_invoice(user_id, class_name, amount, title, description, payload,
+                 provider_token, reminder_interval_days=None):
+    now = int(datetime.datetime.now().timestamp())
     with SessionLocal() as session:
         inv = Invoice(
             user_id=user_id,
@@ -26,7 +32,10 @@ def save_invoice(user_id, class_name, amount, title, description, payload, provi
             description=description,
             payload=payload,
             provider_token=provider_token,
-            sent_at=int(datetime.datetime.now().timestamp()),
+            sent_at=now,
+            reminder_interval_days=reminder_interval_days,
+            next_reminder_at=(now + reminder_interval_days * 24 * 3600
+                              if reminder_interval_days else None),
             status="sent"
         )
         session.add(inv)
@@ -138,6 +147,55 @@ def get_unpaid_invoices(days=None):
         query = query.order_by(Invoice.sent_at.desc())
         rows = session.execute(query).all()
         return [dict(r[0].__dict__, user_name=r[1]) for r in rows]
+
+
+def get_user_unpaid_invoices(user_id):
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(Invoice)
+            .where(Invoice.user_id == user_id, Invoice.status != "paid")
+            .order_by(Invoice.sent_at.desc(), Invoice.id.desc())
+        ).scalars().all()
+        return [dict(row.__dict__) for row in rows]
+
+
+def get_user_unpaid_invoice(user_id, invoice_id):
+    with SessionLocal() as session:
+        row = session.execute(
+            select(Invoice).where(
+                Invoice.id == invoice_id,
+                Invoice.user_id == user_id,
+                Invoice.status != "paid",
+            )
+        ).scalar_one_or_none()
+        return dict(row.__dict__) if row else None
+
+
+def get_due_invoice_reminders(now_ts=None):
+    now_ts = now_ts or int(datetime.datetime.now().timestamp())
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(Invoice)
+            .where(
+                Invoice.status != "paid",
+                Invoice.reminder_interval_days.is_not(None),
+                Invoice.next_reminder_at.is_not(None),
+                Invoice.next_reminder_at <= now_ts,
+            )
+            .order_by(Invoice.next_reminder_at, Invoice.id)
+        ).scalars().all()
+        return [dict(row.__dict__) for row in rows]
+
+
+def schedule_next_invoice_reminder(invoice_id, next_reminder_at):
+    with SessionLocal() as session:
+        result = session.execute(
+            update(Invoice)
+            .where(Invoice.id == invoice_id, Invoice.status != "paid")
+            .values(next_reminder_at=next_reminder_at)
+        )
+        session.commit()
+        return result.rowcount > 0
 
 
 def get_grouped_invoices(days=None, status=None, class_name=None, limit=50):

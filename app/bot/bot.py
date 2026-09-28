@@ -2,6 +2,7 @@ from threading import Thread
 from app.bot.handlers.main_handlers import on_message
 from app.bot.messages import *
 from app.services.poll import activate_poll
+from app.services.patment import process_invoice_reminders
 from app.db.cruds import init_db
 from app.db.cruds import *
 from app.bot.config import AppSettings, get_settings
@@ -35,6 +36,7 @@ async def autostart_loop(client):
                 print("autostart: activating poll", t["poll_id"])
                 await activate_poll(client, t["poll_id"])
                 del_task(t["id"])
+            await process_invoice_reminders(client)
         except Exception as e:
             print("autostart error:", e)
             traceback.print_exc()

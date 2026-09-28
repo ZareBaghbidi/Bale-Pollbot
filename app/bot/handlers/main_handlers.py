@@ -1,6 +1,9 @@
 import time
 import traceback
-from app.bot.handlers.class_handlers import class_hadnler
+from app.bot.handlers.class_handlers import (
+    class_hadnler,
+    handle_send_message_input,
+)
 from app.services.poll import send_poll
 from app.services.patment import process_successful_payment
 from app.db.cruds.votes import get_stats
@@ -12,11 +15,55 @@ from app.bot.handlers.poll_handlers import (
 )
 from app.bot.handlers.payment_handlers import payment_hadnler, handle_get_money_message
 from app.bot.handlers.invoice_handlers import invoice_hadnler
+from app.bot.handlers.member_handlers import (
+    handle_member_message,
+    handle_rename_message,
+    forward_owner_message,
+    forward_bug_report,
+    member_help_keyboard,
+)
 from app.services.patment import process_successful_payment
 from app.services.poll import send_poll
 from app.db.export_votes import export_votes
 from app.bot.config import save_admins
 from app.bot.messages import ADMIN_HELP, OWNER_HELP
+
+
+COMMAND_NAMES = {
+    "help", "unanswered_polls", "unpaid_invoices", "change_name", "message_owner",
+    "report_bug",
+    "roles", "add_admin", "remove_admin", "create_poll", "list_classes",
+    "users", "list_users", "add_users", "create_class", "class_users",
+    "remove_from_class", "delete_class", "send_message", "stop", "clear",
+    "list_polls", "view_responses", "scheduled_polls", "cancel_scheduled",
+    "report", "export_votes", "get_money", "payments", "user_payments",
+    "payments_filter", "invoices", "invoices_filter", "invoices_class",
+    "invoices_unpaid", "invoice_stats",
+}
+
+HELP_BUTTON_COMMANDS = {
+    "📊 نظرسنجی پاسخ‌داده‌نشده": "unanswered_polls",
+    "🧾 صورتحساب پرداخت‌نشده": "unpaid_invoices",
+    "✏️ تغییر نام": "change_name",
+    "🐞 گزارش باگ": "report_bug",
+    "❔ راهنما": "help",
+    "📊 نظرسنجی‌های فعالِ بی‌پاسخ": "unanswered_polls",
+    "🧾 صورتحساب‌های پرداخت‌نشده": "unpaid_invoices",
+    "✏️ تغییر نام کاربری": "change_name",
+    "✉️ پیام به ادمین": "message_owner",
+    "✉️ پیام به اونرها": "message_owner",
+    "✉️ پیام به مسئولان ربات": "message_owner",
+    "🐞 گزارش باگ در ربات": "report_bug",
+}
+
+
+def _normalize_command(text):
+    if text.startswith("/"):
+        remaining = text[1:].strip()
+        command = remaining.split(maxsplit=1)[0] if remaining else ""
+        if command in COMMAND_NAMES:
+            return text[1:]
+    return text
 
 
 async def on_message(message, settings, client, user_states, pending_actions, all_users):
@@ -27,7 +74,18 @@ async def on_message(message, settings, client, user_states, pending_actions, al
             return
 
         uid = message.author.id
-        text = (message.text or "").strip()
+        raw_text = (message.text or "").strip()
+        text_states = {
+            "waiting_for_name", "waiting_for_rename", "waiting_for_text",
+            "waiting_for_owner_message", "waiting_for_bug_report",
+            "poll_wizard_question", "get_money_amount", "get_money_title",
+            "get_money_description", "waiting_add_users", "send_message_id",
+            "send_message_text",
+        }
+        text = (raw_text if user_states.get(uid) in text_states
+                else _normalize_command(raw_text))
+        if user_states.get(uid) not in text_states:
+            text = HELP_BUTTON_COMMANDS.get(text, text)
         parts = text.split('\n')
         aline = text.split()
 
@@ -61,7 +119,31 @@ async def on_message(message, settings, client, user_states, pending_actions, al
                 del user_states[uid]
 
                 await message.reply(
-                    "نام شما ثبت شد. حالا می‌توانید در نظرسنجی شرکت کنید.")
+                    "نام شما ثبت شد. حالا می‌توانید در نظرسنجی شرکت کنید.",
+                    reply_markup=member_help_keyboard(),
+                )
+                return
+
+            elif state == 'waiting_for_rename':
+                await handle_rename_message(uid, text, message, user_states)
+                return
+
+            elif state == 'waiting_for_owner_message':
+                await forward_owner_message(
+                    uid, text, message, client, settings.owners, user_states)
+                return
+
+            elif state == 'waiting_for_bug_report':
+                await forward_bug_report(
+                    uid, text, message, client, settings.developers, user_states)
+                return
+
+            elif state in (
+                    'send_message_target_type', 'send_message_id',
+                    'send_message_text'):
+                await handle_send_message_input(
+                    uid, text, message, pending_actions, user_states,
+                    settings.owners)
                 return
 
             elif state == 'waiting_for_text':
@@ -111,10 +193,16 @@ async def on_message(message, settings, client, user_states, pending_actions, al
 
         is_owner = uid in settings.owners
         is_admin = uid in settings.admins
+
         if uid not in all_users or not get_user_name(uid):
             user_states[uid] = 'waiting_for_name'
             await message.reply(
                 "برای ثبت نام و شرکت در نظرسنجی، لطفاً نامت را بفرست.")
+            return
+
+        if text != "help" and await handle_member_message(
+                uid, text, message, client, user_states, settings.owners,
+                settings.developers):
             return
 
         if is_owner:
@@ -133,7 +221,7 @@ async def on_message(message, settings, client, user_states, pending_actions, al
                     f"{format_people(settings.owners)}\n\n"
                     "🛡 ادمین‌ها (دسترسی محدود):\n"
                     f"{format_people(settings.admins)}\n\n"
-                    "دستورها: add_admin <شناسه> و remove_admin <شناسه>"
+                    "دستورها: /add_admin <شناسه> و /remove_admin <شناسه>"
                 )
                 return
 
@@ -176,12 +264,33 @@ async def on_message(message, settings, client, user_states, pending_actions, al
                     return
                 action = "به فهرست ادمین‌ها اضافه شد" if adding else "از فهرست ادمین‌ها حذف شد"
                 await message.reply(f"کاربر {target_id} {action}.")
+                if adding:
+                    notification = (
+                        "✅ شما به‌عنوان ادمین ربات انتخاب شده‌اید.\n\n"
+                        f"{ADMIN_HELP}"
+                    )
+                else:
+                    notification = "ℹ️ دسترسی ادمین شما از ربات برداشته شد."
+                try:
+                    await client.send_message(
+                        target_id, notification,
+                        reply_markup=(member_help_keyboard(
+                            "✉️ پیام به اونرها") if adding else member_help_keyboard()),
+                    )
+                except Exception as e:
+                    print(f"خطا در اطلاع‌رسانی تغییر نقش به {target_id}: {e}")
+                    await message.reply(
+                        "تغییر نقش ذخیره شد، اما پیام خصوصی به کاربر نرسید. "
+                        "از او بخواه ابتدا ربات را باز کند و /help را بفرستد."
+                    )
                 return
 
         if is_owner or is_admin:
             if is_admin and not is_owner:
                 if text == "help":
-                    await message.reply(ADMIN_HELP)
+                    await message.reply(
+                        ADMIN_HELP, reply_markup=member_help_keyboard(
+                            "✉️ پیام به اونرها"))
                 elif text == "list_classes":
                     await class_hadnler(uid, text, message, pending_actions,
                                        user_states, settings.admins)
@@ -190,7 +299,7 @@ async def on_message(message, settings, client, user_states, pending_actions, al
                                        user_states, text.split())
                 else:
                     await message.reply(
-                        "دسترسی شما محدود است. فقط دستورهای create_poll و list_classes مجاز هستند."
+                        "دسترسی شما محدود است. فقط دستورهای /create_poll و /list_classes مجاز هستند."
                     )
                 return
 
@@ -305,9 +414,16 @@ async def on_message(message, settings, client, user_states, pending_actions, al
 
                 return
 
-            if text == "help":
-                await message.reply(OWNER_HELP)
-                return
+        if text == "help":
+            await message.reply(
+                OWNER_HELP, reply_markup=member_help_keyboard(
+                    "✉️ پیام به اونرها"))
+            return
+
+        if await handle_member_message(
+                uid, text, message, client, user_states, settings.owners,
+                settings.developers):
+            return
 
         display_name = get_user_name(uid) or message.author.first_name or "کاربر"
         await message.reply(display_name + " رو نمی‌شناسم!🫣")

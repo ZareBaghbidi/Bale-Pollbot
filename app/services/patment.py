@@ -1,7 +1,12 @@
-from balethon.objects import LabeledPrice
+from balethon.objects import InlineKeyboard, LabeledPrice
 
 from app.db.cruds.classes import get_class_id_by_name, get_users_in_class
 from app.db.cruds.invoices import get_invoice_by_payload, save_invoice, update_invoice_status
+from app.db.cruds.invoices import (
+    get_due_invoice_reminders,
+    get_user_unpaid_invoice,
+    schedule_next_invoice_reminder,
+)
 from app.db.cruds.payments import save_payment
 from app.db.cruds.users import get_user_name
 from balethon import Client
@@ -81,7 +86,8 @@ def _validate_description(description, errors):
 
 # ---------- SEND PAY ------------
 
-async def send_pay_to_class(client, settings, class_name, amount_rial, title, description):
+async def send_pay_to_class(client, settings, class_name, amount_rial, title,
+                            description, reminder_interval_days):
     try:
         class_id = get_class_id_by_name(class_name)
         if class_id is None:
@@ -98,7 +104,8 @@ async def send_pay_to_class(client, settings, class_name, amount_rial, title, de
             users_in_class=users_in_class,
             amount_rial=amount_rial,
             title=title,
-            description=description
+            description=description,
+            reminder_interval_days=reminder_interval_days,
         )
 
         result_msg = _build_send_result_message(
@@ -118,7 +125,9 @@ async def send_pay_to_class(client, settings, class_name, amount_rial, title, de
         return False, error_msg
 
 
-async def _send_invoices_to_users(client: Client, settings, class_name, users_in_class, amount_rial, title, description):
+async def _send_invoices_to_users(client: Client, settings, class_name,
+                                  users_in_class, amount_rial, title,
+                                  description, reminder_interval_days):
     success_count = 0
     fail_count = 0
     fail_details = []
@@ -134,21 +143,24 @@ async def _send_invoices_to_users(client: Client, settings, class_name, users_in
                 title=title,
                 description=description,
                 payload=payload,
-                provider_token=settings.provider_token
+                provider_token=settings.provider_token,
+                reminder_interval_days=reminder_interval_days,
             )
 
-            await client.send_invoice(
+            await client.send_message(
                 chat_id=uid,
-                title=title,
-                description=description,
-                payload=payload,
-                provider_token=settings.provider_token,
-                prices=[LabeledPrice(label=title, amount=amount_rial)],
-                need_name=True,
-                need_phone_number=True
+                text=(
+                    f"🧾 صورتحساب «{title}» برای شما فعال شد.\n"
+                    f"مبلغ: {amount_rial // 10:,} تومان\n"
+                    f"برای مشاهده و پرداخت، /unpaid_invoices را بفرستید "
+                    f"یا از دکمهٔ زیر استفاده کنید.\n"
+                    f"یادآوری پرداخت هر {reminder_interval_days} روز یک‌بار ارسال می‌شود."
+                ),
+                reply_markup=InlineKeyboard(
+                    [("🧾 مشاهده و پرداخت", f"user:unpaid:{uid}")]
+                ),
             )
             success_count += 1
-            time.sleep(0.3)
 
         except Exception as e:
             fail_count += 1
@@ -160,16 +172,17 @@ async def _send_invoices_to_users(client: Client, settings, class_name, users_in
 
 
 def _build_invoice_payload(class_name, uid) -> str:
-    return f"class_{class_name}_user_{uid}_time_{int(time.time())}"
+    return f"class_{class_name}_user_{uid}_time_{time.time_ns()}"
 
 
 def _build_send_result_message(class_name, users_in_class, amount_rial, success_count, fail_count, fail_details):
-    result_msg = f"📊 **نتیجه ارسال صورتحساب:**\n"
+    result_msg = f"📊 **نتیجهٔ فعال‌سازی صورتحساب:**\n"
     result_msg += f"🎯 کلاس: {class_name}\n"
     result_msg += f"👥 تعداد کاربران: {len(users_in_class)}\n"
     result_msg += f"💰 مبلغ هر صورتحساب: {amount_rial // 10:,} تومان\n"
-    result_msg += f"✅ موفق: {success_count} کاربر\n"
-    result_msg += f"❌ ناموفق: {fail_count} کاربر\n"
+    result_msg += f"✅ اطلاع‌رسانی موفق: {success_count} کاربر\n"
+    result_msg += f"❌ اطلاع‌رسانی ناموفق: {fail_count} کاربر\n"
+    result_msg += "\nکاربران برای پرداخت باید /unpaid_invoices را بفرستند.\n"
 
     if fail_details:
         result_msg += "**جزئیات خطاها:**\n"
@@ -179,6 +192,50 @@ def _build_send_result_message(class_name, users_in_class, amount_rial, success_
             result_msg += f"• و {len(fail_details) - 3} خطای دیگر...\n"
 
     return result_msg
+
+
+async def send_invoice_to_user(client: Client, uid, invoice):
+    """Send the payment form for one unpaid invoice after an explicit request."""
+    await client.send_invoice(
+        chat_id=uid,
+        title=invoice["title"],
+        description=invoice.get("description") or "",
+        payload=invoice["payload"],
+        provider_token=invoice["provider_token"],
+        prices=[LabeledPrice(label=invoice["title"], amount=invoice["amount"])],
+        need_name=True,
+        need_phone_number=True,
+    )
+
+
+async def process_invoice_reminders(client: Client):
+    now = int(time.time())
+    for invoice in get_due_invoice_reminders(now):
+        invoice_id = invoice["id"]
+        uid = invoice["user_id"]
+        interval_days = invoice["reminder_interval_days"]
+        if get_user_unpaid_invoice(uid, invoice_id) is None:
+            continue
+        try:
+            await client.send_message(
+                chat_id=uid,
+                text=(
+                    f"⏰ یادآوری: صورتحساب «{invoice['title']}» به مبلغ "
+                    f"{invoice['amount'] // 10:,} تومان هنوز پرداخت نشده است.\n"
+                    "برای پرداخت، دکمهٔ زیر را بزنید یا /unpaid_invoices را بفرستید."
+                ),
+                reply_markup=InlineKeyboard(
+                    [("💳 مشاهده و پرداخت", f"user:pay:{uid}:{invoice_id}")]
+                ),
+            )
+        except Exception as exc:
+            print(f"خطا در ارسال یادآوری صورتحساب {invoice_id} به {uid}: {exc}")
+        finally:
+            # Schedule from now so a delayed/offline bot never sends a burst of
+            # catch-up reminders to the same user.
+            schedule_next_invoice_reminder(
+                invoice_id, int(time.time()) + interval_days * 24 * 3600
+            )
 
 
 # ---------- PAYMENT HANDLER ----------

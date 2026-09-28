@@ -1,7 +1,7 @@
 
 
+import asyncio
 import datetime
-import time
 import traceback
 import jdatetime
 from balethon.objects import InlineKeyboard
@@ -12,6 +12,8 @@ from app.db.cruds.tasks import add_task
 from app.db.cruds.users import get_user_classes, get_user_name
 from app.db.cruds.votes import vote
 from app.services.patment import send_pay_to_class
+from app.bot.handlers.member_handlers import handle_member_callback
+from app.bot.handlers.class_handlers import _send_message_cancel_keyboard
 from app.services.poll import activate_poll
 from app.bot.poll_calendar import (
     TEHRAN, calendar_keyboard, class_keyboard, current_jalali_month,
@@ -43,6 +45,40 @@ async def get_money_wizard_callback(callback_query, settings, pending_actions, u
         else:
             await callback_query.answer("این فرایند منقضی شده است.", show_alert=True)
         return
+    if action == "reminder":
+        if (len(parts) != 4
+                or pending.get("kind") != "get_money_wizard"
+                or pending.get("step") != "reminder"):
+            await callback_query.answer("این مرحله منقضی شده است.", show_alert=True)
+            return
+        try:
+            interval_days = int(parts[3])
+        except ValueError:
+            await callback_query.answer("بازهٔ یادآوری نامعتبر است.", show_alert=True)
+            return
+        if interval_days not in (1, 2, 3, 5, 7):
+            await callback_query.answer("بازهٔ یادآوری نامعتبر است.", show_alert=True)
+            return
+        pending["reminder_interval_days"] = interval_days
+        pending["step"] = "confirm"
+        user_states[uid] = "confirm_payment"
+        summary = (
+            "📋 خلاصهٔ صورتحساب\n"
+            f"• مبلغ: {pending['amount_rial'] // 10:,} تومان\n"
+            f"• کلاس: {pending['class_name']} ({pending['users_count']} کاربر)\n"
+            f"• عنوان: {pending['title']}\n"
+            f"• توضیحات: {pending['description']}\n"
+            f"• یادآوری: هر {interval_days} روز یک‌بار\n\n"
+            "با تأیید، صورتحساب برای اعضای کلاس فعال می‌شود؛ "
+            "آن‌ها برای پرداخت، فهرست صورتحساب‌هایشان را باز می‌کنند."
+        )
+        keyboard = InlineKeyboard(
+            [("✅ تأیید و فعال‌سازی", f"confirm_pay_{uid}"),
+             ("❌ لغو", f"cancel_pay_{uid}")]
+        )
+        await callback_query.answer("بازه انتخاب شد.")
+        await callback_query.message.edit_text(summary, reply_markup=keyboard)
+        return
     if (action != "class" or len(parts) != 4
             or pending.get("kind") != "get_money_wizard"
             or pending.get("step") != "class"):
@@ -69,16 +105,113 @@ async def get_money_wizard_callback(callback_query, settings, pending_actions, u
     )
 
 
+async def send_message_wizard_callback(callback_query, settings,
+                                       pending_actions, user_states):
+    parts = callback_query.data.split(":")
+    if len(parts) < 3:
+        await callback_query.answer("درخواست نامعتبر است.", show_alert=True)
+        return
+    action = parts[1]
+    try:
+        uid = int(parts[2])
+    except ValueError:
+        await callback_query.answer("درخواست نامعتبر است.", show_alert=True)
+        return
+    if callback_query.author.id != uid or uid not in settings.owners:
+        await callback_query.answer("این گزینه فقط برای اونر سازنده است.", show_alert=True)
+        return
+
+    pending = pending_actions.get(uid, {})
+    if pending.get("kind") != "send_message":
+        await callback_query.answer("این فرایند منقضی شده است.", show_alert=True)
+        return
+
+    if action == "cancel":
+        pending_actions.pop(uid, None)
+        user_states.pop(uid, None)
+        await callback_query.answer("ارسال پیام لغو شد.")
+        await callback_query.message.edit_text(
+            "❌ ارسال پیام لغو شد.", reply_markup=None)
+        return
+
+    if action == "type":
+        if (len(parts) != 4 or pending.get("step") != "target_type"
+                or parts[3] not in ("class", "person")):
+            await callback_query.answer("انتخاب نوع معتبر نیست.", show_alert=True)
+            return
+        if parts[3] == "person":
+            pending["step"] = "person_id"
+            user_states[uid] = "send_message_id"
+            await callback_query.answer("ارسال به شخص انتخاب شد.")
+            await callback_query.message.edit_text(
+                "شناسهٔ کاربر را به‌صورت عدد بفرست:",
+                reply_markup=_send_message_cancel_keyboard(uid),
+            )
+            return
+
+        classes = get_all_classes()
+        if not classes:
+            await callback_query.answer("هنوز کلاسی ساخته نشده است.", show_alert=True)
+            return
+        pending["step"] = "class"
+        rows = [[(name, f"sm:class:{uid}:{class_id}")]
+                for class_id, name in classes]
+        rows.append([("❌ لغو", f"sm:cancel:{uid}")])
+        await callback_query.answer("یک کلاس را انتخاب کن.")
+        await callback_query.message.edit_text(
+            "پیام را برای کدام کلاس بفرستم؟",
+            reply_markup=InlineKeyboard(*rows),
+        )
+        return
+
+    if action == "class":
+        if len(parts) != 4 or pending.get("step") != "class":
+            await callback_query.answer("انتخاب کلاس معتبر نیست.", show_alert=True)
+            return
+        try:
+            class_id = int(parts[3])
+        except ValueError:
+            await callback_query.answer("شناسهٔ کلاس نامعتبر است.", show_alert=True)
+            return
+        class_item = next(
+            (item for item in get_all_classes() if item[0] == class_id), None)
+        if class_item is None:
+            await callback_query.answer("این کلاس دیگر وجود ندارد.", show_alert=True)
+            return
+        user_ids = get_users_in_class(class_id)
+        if not user_ids:
+            await callback_query.answer("این کلاس کاربری ندارد.", show_alert=True)
+            return
+        pending.update(
+            step="message_text",
+            target_type="class",
+            class_name=class_item[1],
+            class_id=class_id,
+            user_ids=user_ids,
+        )
+        user_states[uid] = "send_message_text"
+        await callback_query.answer("کلاس انتخاب شد.")
+        await callback_query.message.edit_text(
+            f"کلاس «{class_item[1]}» انتخاب شد. متن پیام را بفرست:",
+            reply_markup=_send_message_cancel_keyboard(uid),
+        )
+        return
+
+    await callback_query.answer("این گزینه معتبر نیست.", show_alert=True)
+
+
 async def confirm_pay(callback_query, pending_actions, client, settings, user_states):
     target_uid = int(callback_query.data.split("_")[2])
 
-    if callback_query.author.id != target_uid:
+    if callback_query.author.id != target_uid or target_uid not in settings.owners:
         await callback_query.answer(
             "این درخواست برای شما نیست!", show_alert=True)
         return
 
     validation = pending_actions.get(target_uid, {})
-    if not validation:
+    if (validation.get("kind") != "get_money_wizard"
+            or validation.get("step") != "confirm"
+            or validation.get("reminder_interval_days") not in (1, 2, 3, 5, 7)):
         await callback_query.answer("اطلاعات یافت نشد!", show_alert=True)
         return
 
@@ -88,7 +221,8 @@ async def confirm_pay(callback_query, pending_actions, client, settings, user_st
                                             validation['class_name'],
                                             validation['amount_rial'],
                                             validation['title'],
-                                            validation['description']
+                                            validation['description'],
+                                            validation['reminder_interval_days'],
                                             )
 
     await client.send_message(target_uid, result_msg)
@@ -111,6 +245,11 @@ async def cancel_pay(callback_query, pending_actions,  user_states):
     if callback_query.author.id != target_uid:
         await callback_query.answer(
             "این درخواست برای شما نیست!", show_alert=True)
+        return
+
+    pending = pending_actions.get(target_uid, {})
+    if pending.get("kind") != "get_money_wizard":
+        await callback_query.answer("این فرایند منقضی شده است.", show_alert=True)
         return
 
     if target_uid in user_states:
@@ -242,7 +381,7 @@ async def poll_wizard_callback(callback_query, settings, pending_actions, user_s
 
     pending = pending_actions.get(uid)
     if not pending or pending.get("kind") != "poll_wizard":
-        await callback_query.answer("این فرایند منقضی شده است؛ دوباره create_poll را بفرست.", show_alert=True)
+        await callback_query.answer("این فرایند منقضی شده است؛ دوباره /create_poll را بفرست.", show_alert=True)
         return
 
     if action == "cancel":
@@ -524,24 +663,29 @@ async def cancel_delclass(callback_query, pending_actions,  user_states):
     return
 
 
-async def confirm_sendmsg(callback_query, pending_actions, user_states, client):
+async def confirm_sendmsg(callback_query, pending_actions, user_states, client,
+                          settings):
     target_uid = int(callback_query.data.split("_")[2])
-    if callback_query.author.id != target_uid:
+    if callback_query.author.id != target_uid or target_uid not in settings.owners:
         await callback_query.answer(
             "این درخواست برای شما نیست!", show_alert=True)
         return
 
     pending = pending_actions.get(target_uid)
-    if not pending or pending.get('kind') != 'send_message':
+    if (not pending or pending.get('kind') != 'send_message'
+            or pending.get('step') != 'confirm'):
         await callback_query.answer(
             "اطلاعات یافت نشد یا منقضی شده!", show_alert=True)
         return
 
     await callback_query.answer("در حال ارسال پیام...")
 
-    class_name = pending['class_name']
     message_text = pending['message_text']
     user_ids = pending['user_ids']
+    if pending.get("target_type") == "class":
+        report_target = f"کلاس {pending['class_name']}"
+    else:
+        report_target = f"شخص با شناسهٔ {pending['target_id']}"
 
     success_count = 0
     fail_count = 0
@@ -556,14 +700,14 @@ async def confirm_sendmsg(callback_query, pending_actions, user_states, client):
             await client.send_message(uid, custom_text)
 
             success_count += 1
-            time.sleep(0.3)
+            await asyncio.sleep(0.3)
         except Exception as e:
             fail_count += 1
             user_name = get_user_name(uid) or f"کاربر {uid}"
             fail_details.append(f"{user_name}: {str(e)[:50]}")
             print(f"خطا در ارسال به {uid}: {e}")
 
-    report = f"📨 *گزارش ارسال پیام به کلاس {class_name}*\n"
+    report = f"📨 *گزارش ارسال پیام به {report_target}*\n"
     report += f"👥 تعداد کاربران: {len(user_ids)}\n"
     report += f"✅ موفق: {success_count}\n"
     report += f"❌ ناموفق: {fail_count}\n"
@@ -584,11 +728,17 @@ async def confirm_sendmsg(callback_query, pending_actions, user_states, client):
     return
 
 
-async def cancel_sendmsg(callback_query, pending_actions, user_states):
+async def cancel_sendmsg(callback_query, pending_actions, user_states, settings):
     target_uid = int(callback_query.data.split("_")[2])
-    if callback_query.author.id != target_uid:
+    if callback_query.author.id != target_uid or target_uid not in settings.owners:
         await callback_query.answer(
             "این درخواست برای شما نیست!", show_alert=True)
+        return
+
+    pending = pending_actions.get(target_uid, {})
+    if (pending.get("kind") != "send_message"
+            or pending.get("step") != "confirm"):
+        await callback_query.answer("این فرایند منقضی شده است.", show_alert=True)
         return
 
     if target_uid in user_states:
@@ -681,6 +831,17 @@ async def voting(callback_query, pending_actions, user_states, client):
 async def on_callback_query(callback_query, settings, client, pending_actions, user_states):
     print("Callback received! data:", callback_query.data)
 
+    if callback_query.data.startswith("sm:"):
+        await send_message_wizard_callback(
+            callback_query, settings, pending_actions, user_states)
+        return
+
+    if callback_query.data.startswith("user:"):
+        await handle_member_callback(
+            callback_query, client, user_states, settings.owners,
+            settings.developers)
+        return
+
     if callback_query.data.startswith("gm:"):
         await get_money_wizard_callback(callback_query, settings, pending_actions, user_states)
         return
@@ -721,11 +882,13 @@ async def on_callback_query(callback_query, settings, client, pending_actions, u
         return
 
     elif callback_query.data.startswith("confirm_sendmsg_"):
-        await confirm_sendmsg(callback_query, pending_actions, user_states, client)
+        await confirm_sendmsg(
+            callback_query, pending_actions, user_states, client, settings)
         return
 
     elif callback_query.data.startswith("cancel_sendmsg_"):
-        await cancel_sendmsg(callback_query, pending_actions, user_states)
+        await cancel_sendmsg(
+            callback_query, pending_actions, user_states, settings)
         return
 
     else:

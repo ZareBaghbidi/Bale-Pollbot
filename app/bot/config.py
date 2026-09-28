@@ -12,13 +12,14 @@ class AppSettings(BaseSettings):
 
     owners: Annotated[Set[int], NoDecode] = Field(default_factory=set, alias="OWNERS")
     admins: Annotated[Set[int], NoDecode] = Field(default_factory=set, alias="ADMINS")
+    developers: Annotated[Set[int], NoDecode] = Field(default_factory=set, alias="DEVELOPERS")
 
     model_config = SettingsConfigDict(
         env_file="app/.env",
         case_sensitive=False,
     )
 
-    @field_validator("owners", "admins", mode="before")
+    @field_validator("owners", "admins", "developers", mode="before")
     @classmethod
     def parse_id_list(cls, v):
         if v is None or v == "":

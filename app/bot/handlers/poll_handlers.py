@@ -134,7 +134,7 @@ async def handle_scheduled_polls_command(text, message):
     if text.startswith('cancel_scheduled'):
         parts = text.split()
         if len(parts) != 2 or parts[0] != 'cancel_scheduled':
-            await message.reply("فرمت دستور: `cancel_scheduled <شناسه‌زمان‌بندی>`؛ شناسه را از `scheduled_polls` بردار.")
+            await message.reply("فرمت دستور: /cancel_scheduled <شناسه‌زمان‌بندی>؛ شناسه را از /scheduled_polls بردار.")
             return True
         try:
             task_id = int(parts[1])
@@ -143,7 +143,7 @@ async def handle_scheduled_polls_command(text, message):
             return True
         poll_id = cancel_scheduled_task(task_id)
         if poll_id is None:
-            await message.reply("این زمان‌بندی پیدا نشد؛ فهرست را با `scheduled_polls` تازه کن.")
+            await message.reply("این زمان‌بندی پیدا نشد؛ فهرست را با /scheduled_polls تازه کن.")
         else:
             await message.reply(f"زمان‌بندی {task_id} لغو شد و نظرسنجیِ منتشرنشدهٔ {poll_id} حذف شد.")
         return True
@@ -205,7 +205,7 @@ async def _handle_view_responses(text, message):
     parts = text.split()
     if len(parts) < 2:
         await message.reply(
-            "لطفا شماره PID را وارد کنید. مثال: view_responses 5")
+            "لطفا شماره PID را وارد کنید. مثال: /view_responses 5")
         return
     try:
         pid = int(parts[1])

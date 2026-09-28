@@ -66,10 +66,10 @@ async def _handle_invoices(uid, message, admins):
                     report += "   ─────\n"
 
         report += "\n🔍 *دستورات بیشتر:*\n"
-        report += "• `invoices_filter days=7 status=paid`\n"
-        report += "• `invoices_class 05`\n"
-        report += "• `invoices_unpaid`\n"
-        report += "• `invoice_stats`\n"
+        report += "• /invoices_filter days=7 status=paid\n"
+        report += "• /invoices_class 05\n"
+        report += "• /invoices_unpaid\n"
+        report += "• /invoice_stats\n"
 
         await _reply_long(message, report)
 
@@ -179,7 +179,7 @@ async def _handle_invoices_unpaid(uid, message, admins):
         if len(class_groups) > 5:
             report += f"و {len(class_groups) - 5} کلاس دیگر...\n"
 
-        report += "\n💡 *راهنمایی:* برای ارسال یادآوری می‌توانید از دستور `get_money` مجدداً استفاده کنید."
+        report += "\n💡 *راهنمایی:* برای فعال‌کردن صورتحساب جدید از دستور /get_money استفاده کنید."
 
         if len(report) > 3800:
             await message.reply(report[:3800])

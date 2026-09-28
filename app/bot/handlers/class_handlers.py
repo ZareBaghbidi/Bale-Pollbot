@@ -10,6 +10,7 @@ from app.db.cruds.classes import (
     remove_user_from_class,
 )
 from app.db.cruds.invoices import get_all_invoices, get_class_invoice_summary
+from app.db.cruds.users import get_user_name
 
 
 async def _reply_long(message, text):
@@ -22,52 +23,111 @@ async def _reply_long(message, text):
 
 
 async def _handle_send_message(uid, text, message, pending_actions, user_states):
-    parts = text.split('\n', 1)
-    first_line = parts[0].strip()
-    if len(parts) < 2 or not parts[1].strip():
+    if text.strip() != "send_message":
         await message.reply(WRONG_SEND_MESSAGE_HELP)
-        return
-
-    try:
-        _, class_name = first_line.split(maxsplit=1)
-    except ValueError:
-        await message.reply("❌ لطفاً نام کلاس را وارد کنید.\nمثال: send_message 05")
-        return
-
-    class_name = class_name.strip()
-    message_text = parts[1].strip()
-
-    class_id = get_class_id_by_name(class_name)
-    if class_id is None:
-        await message.reply(f"❌ کلاس '{class_name}' یافت نشد.")
-        return
-
-    user_ids = get_users_in_class(class_id)
-    if not user_ids:
-        await message.reply(f"📭 هیچ کاربری در کلاس '{class_name}' وجود ندارد.")
         return
 
     pending_actions[uid] = {
         'kind': 'send_message',
-        'class_name': class_name,
-        'message_text': message_text,
-        'user_ids': user_ids
+        'step': 'target_type',
     }
-    user_states[uid] = 'confirm_send_message'
-
-    summary = f"📨 *ارسال پیام به کلاس {class_name}*\n\n"
-    summary += f"👥 تعداد گیرندگان: {len(user_ids)} نفر\n"
-    summary += f"📝 متن پیام:\n---\n{message_text}\n---\n\n"
-    summary += "آیا از ارسال این پیام اطمینان دارید؟"
-
+    user_states[uid] = 'send_message_target_type'
     kb = InlineKeyboard(
-        [
-            ("✅ بله، ارسال شود", f"confirm_sendmsg_{uid}"),
-            ("❌ خیر، لغو", f"cancel_sendmsg_{uid}")
-        ]
+        [("🏫 ارسال به یک کلاس", f"sm:type:{uid}:class")],
+        [("👤 ارسال به یک شخص", f"sm:type:{uid}:person")],
+        [("❌ لغو", f"sm:cancel:{uid}")],
     )
-    await message.reply(summary, reply_markup=kb)
+    await message.reply("پیام را برای چه کسی بفرستم؟", reply_markup=kb)
     return
+
+
+def _send_message_cancel_keyboard(uid):
+    return InlineKeyboard([("❌ لغو", f"sm:cancel:{uid}")])
+
+
+async def handle_send_message_input(uid, text, message, pending_actions,
+                                    user_states, owners):
+    state = user_states.get(uid)
+    if not state or not state.startswith("send_message_"):
+        return False
+    pending = pending_actions.get(uid, {})
+    if uid not in owners or pending.get("kind") != "send_message":
+        pending_actions.pop(uid, None)
+        user_states.pop(uid, None)
+        await message.reply("دسترسی شما به فرایند ارسال پیام وجود ندارد.")
+        return True
+
+    if state == "send_message_target_type":
+        await message.reply("نوع گیرنده را با یکی از دکمه‌های پیام قبلی انتخاب کن.")
+        return True
+
+    if state == "send_message_id":
+        normalized = text.translate(str.maketrans(
+            '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')).strip()
+        try:
+            target_id = int(normalized)
+            if target_id <= 0:
+                raise ValueError
+        except ValueError:
+            await message.reply(
+                "شناسه باید یک عدد مثبت باشد؛ دوباره بفرست.",
+                reply_markup=_send_message_cancel_keyboard(uid),
+            )
+            return True
+        pending.update(
+            step="message_text",
+            target_type="person",
+            target_id=target_id,
+            target_name=get_user_name(target_id) or "",
+            user_ids=[target_id],
+        )
+        user_states[uid] = "send_message_text"
+        await message.reply(
+            "متن پیام را بفرست. می‌توانی از `{name}` و `{id}` برای درج نام و شناسهٔ گیرنده استفاده کنی.",
+            reply_markup=_send_message_cancel_keyboard(uid),
+        )
+        return True
+
+    if state == "send_message_text":
+        message_text = text.strip()
+        if not message_text:
+            await message.reply(
+                "متن پیام نمی‌تواند خالی باشد؛ متن را بفرست.",
+                reply_markup=_send_message_cancel_keyboard(uid),
+            )
+            return True
+        if len(message_text) > 3000:
+            await message.reply(
+                "متن پیام نباید بیشتر از ۳۰۰۰ نویسه باشد؛ کوتاه‌ترش کن.",
+                reply_markup=_send_message_cancel_keyboard(uid),
+            )
+            return True
+
+        pending["message_text"] = message_text
+        pending["step"] = "confirm"
+        if pending["target_type"] == "class":
+            recipient = f"کلاس «{pending['class_name']}»"
+            recipient_count = len(pending["user_ids"])
+            count_line = f"👥 تعداد گیرندگان: {recipient_count} نفر\n"
+        else:
+            recipient = "شخص"
+            if pending.get("target_name"):
+                recipient += f" «{pending['target_name']}»"
+            recipient += f" (شناسه: {pending['target_id']})"
+            count_line = "👥 تعداد گیرندگان: ۱ نفر\n"
+
+        summary = f"📨 پیام برای {recipient}\n\n{count_line}"
+        summary += f"📝 متن پیام:\n---\n{message_text}\n---\n\n"
+        summary += "بعد از تأیید، پیام ارسال می‌شود. تأیید می‌کنی؟"
+        user_states[uid] = "confirm_send_message"
+        kb = InlineKeyboard(
+            [("✅ تأیید و ارسال", f"confirm_sendmsg_{uid}"),
+             ("❌ لغو", f"cancel_sendmsg_{uid}")]
+        )
+        await message.reply(summary, reply_markup=kb)
+        return True
+
+    return False
 
 
 async def _handle_remove_from_class(text, message):
@@ -91,7 +151,7 @@ async def _handle_remove_from_class(text, message):
 async def _handle_create_class(text, message):
     parts = text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.reply("لطفاً نام کلاس را وارد کنید.\nمثال: create_class 05")
+        await message.reply("لطفاً نام کلاس را وارد کنید.\nمثال: /create_class 05")
         return
 
     class_name = parts[1].strip()
@@ -124,7 +184,7 @@ async def _handle_class_users(uid, text, message, admins):
 
     parts = text.split()
     if len(parts) < 2:
-        await message.reply("فرمت: class_users <نام کلاس>\nمثال: class_users 05")
+        await message.reply("فرمت: /class_users <نام کلاس>\nمثال: /class_users 05")
         return
 
     class_name = parts[1]
@@ -152,7 +212,7 @@ async def _handle_delete_class(uid, text, message, pending_actions, user_states)
     parts = text.split()
     if len(parts) != 2:
         await message.reply(
-            "📝 *فرمت:*\n`delete_class <نام کلاس>`\nمثال: delete_class 05")
+            "📝 *فرمت:*\n/delete_class <نام کلاس>\nمثال: /delete_class 05")
         return
 
     class_name = parts[1].strip()
@@ -188,7 +248,7 @@ async def _handle_invoices_class(uid, text, message, admins):
     parts = text.split()
     if len(parts) < 2:
         await message.reply(
-            "فرمت: invoices_class <نام کلاس>\nمثال: invoices_class 05")
+            "فرمت: /invoices_class <نام کلاس>\nمثال: /invoices_class 05")
         return
 
     class_name = parts[1]

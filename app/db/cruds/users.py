@@ -7,7 +7,8 @@ __all__ = [
     "get_users",
     "get_all_users_with_names",
     "get_user_name",
-    "get_user_classes"
+    "get_user_classes",
+    "update_user_name",
 ]
 
 
@@ -39,6 +40,16 @@ def get_user_name(uid):
     with SessionLocal() as session:
         user = session.get(User, uid)
         return user.name if user else None
+
+
+def update_user_name(uid, name):
+    with SessionLocal() as session:
+        user = session.get(User, uid)
+        if user is None:
+            return False
+        user.name = name.strip()
+        session.commit()
+        return True
 
 
 def get_user_classes(uid):

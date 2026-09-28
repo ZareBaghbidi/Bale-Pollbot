@@ -3,14 +3,18 @@ from balethon.objects import InlineKeyboard
 from app.db.cruds.classes import get_class_id_by_name, get_users_in_class
 from app.db.cruds.polls import do_activate_poll, get_poll_class, get_poll_type, stop_poll
 from app.db.cruds.questions import get_questions
+from app.db.cruds.users import get_users
 
 
-async def send_poll(client, uid, pid):
+async def send_poll(client, uid, pid, question_ids=None):
     poll_type = get_poll_type(pid)
     if not poll_type:
         return
 
     questions = get_questions(pid)
+    if question_ids is not None:
+        question_ids = set(question_ids)
+        questions = [question for question in questions if question[1] in question_ids]
 
     for q_index, q_id, q_text in questions:
         if poll_type == 'score':
@@ -54,13 +58,13 @@ async def activate_poll(client, pid):
 
     class_name = get_poll_class(pid)
     if class_name is None:
-        print(f"⚠️ کلاس '{class_name}' برای نظرسنجی {pid} یافت نشد.")
-        return
-
-    class_id = get_class_id_by_name(class_name)
-    if not class_id:
-        return
-    users_to_send = get_users_in_class(class_id)
+        users_to_send = get_users()
+    else:
+        class_id = get_class_id_by_name(class_name)
+        if not class_id:
+            print(f"⚠️ کلاس '{class_name}' برای نظرسنجی {pid} یافت نشد.")
+            return
+        users_to_send = get_users_in_class(class_id)
 
     for u in users_to_send:
         await send_poll(client, u, pid)

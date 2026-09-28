@@ -126,6 +126,8 @@ class Invoice(Base):
     payload = Column(Text)
     provider_token = Column(Text)
     sent_at = Column(Integer)
+    reminder_interval_days = Column(Integer)
+    next_reminder_at = Column(Integer)
     status = Column(Text, default="sent")
     paid_at = Column(Integer)
     payment_id = Column(Integer, ForeignKey(

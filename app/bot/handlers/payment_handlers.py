@@ -77,7 +77,7 @@ async def _handle_user_payments(uid, text, message, admins):
     parts = text.split()
     if len(parts) < 2:
         await message.reply(
-            "فرمت: user_payments <آیدی کاربر>\nمثال: user_payments 213614271")
+            "فرمت: /user_payments <آیدی کاربر>\nمثال: /user_payments 213614271")
         return
 
     try:
@@ -176,7 +176,7 @@ async def _handle_get_money(uid, text, message, pending_actions, user_states, ad
         await message.reply("یک صورتحساب در انتظار تأیید دارید؛ ابتدا آن را تأیید یا لغو کن.")
         return
     if text.strip() != 'get_money':
-        await message.reply("برای شروع فقط `get_money` را بفرست؛ اطلاعات را مرحله‌به‌مرحله می‌گیرم.")
+        await message.reply("برای شروع فقط /get_money را بفرست؛ اطلاعات را مرحله‌به‌مرحله می‌گیرم.")
         return
     classes = get_all_classes()
     if not classes:
@@ -256,20 +256,25 @@ async def handle_get_money_message(uid, text, message, pending_actions, user_sta
             await message.reply(errors, reply_markup=_get_money_cancel_keyboard(uid))
             return True
 
-        summary = (
-            "📋 خلاصه صورتحساب\n"
-            f"• مبلغ: {validation['amount_rial'] // 10:,} تومان\n"
-            f"• کلاس: {validation['class_name']} ({validation['users_count']} کاربر)\n"
-            f"• عنوان: {validation['title']}\n"
-            f"• توضیحات: {validation['description']}\n\n"
-            f"ارسال صورتحساب برای {validation['users_count']} کاربر را تأیید می‌کنی؟"
-        )
-        user_states[uid] = 'confirm_payment'
+        validation.update(kind="get_money_wizard", step="reminder")
         pending_actions[uid] = validation
+        user_states[uid] = 'get_money_reminder'
         keyboard = InlineKeyboard(
-            [("✅ تأیید و ارسال", f"confirm_pay_{uid}"),
-             ("❌ لغو", f"cancel_pay_{uid}")])
-        await message.reply(summary, reply_markup=keyboard)
+            [("هر ۱ روز", f"gm:reminder:{uid}:1"),
+             ("هر ۲ روز", f"gm:reminder:{uid}:2")],
+            [("هر ۳ روز", f"gm:reminder:{uid}:3"),
+             ("هر ۵ روز", f"gm:reminder:{uid}:5")],
+            [("هر ۷ روز", f"gm:reminder:{uid}:7")],
+            [("❌ لغو", f"gm:cancel:{uid}")],
+        )
+        await message.reply(
+            "یادآوری پرداخت برای افراد پرداخت‌نکرده هر چند روز یک‌بار ارسال شود؟",
+            reply_markup=keyboard,
+        )
+        return True
+
+    if state == 'get_money_reminder':
+        await message.reply("بازهٔ یادآوری را با یکی از دکمه‌های پیام قبلی انتخاب کن.")
         return True
 
     return False
