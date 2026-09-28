@@ -14,6 +14,7 @@ from balethon import Client
 import time
 import datetime
 import traceback
+import uuid
 
 
 # ---------- PAYMENT VALIDATION ----------
@@ -97,6 +98,7 @@ async def send_pay_to_class(client, settings, class_name, amount_rial, title,
         if not users_in_class:
             return False, f"هیچ کاربری در کلاس '{class_name}' وجود ندارد."
 
+        group_id = uuid.uuid4().hex
         success_count, fail_count, fail_details = await _send_invoices_to_users(
             client=client,
             settings=settings,
@@ -106,6 +108,7 @@ async def send_pay_to_class(client, settings, class_name, amount_rial, title,
             title=title,
             description=description,
             reminder_interval_days=reminder_interval_days,
+            group_id=group_id,
         )
 
         result_msg = _build_send_result_message(
@@ -127,7 +130,8 @@ async def send_pay_to_class(client, settings, class_name, amount_rial, title,
 
 async def _send_invoices_to_users(client: Client, settings, class_name,
                                   users_in_class, amount_rial, title,
-                                  description, reminder_interval_days):
+                                  description, reminder_interval_days,
+                                  group_id=None):
     success_count = 0
     fail_count = 0
     fail_details = []
@@ -145,6 +149,7 @@ async def _send_invoices_to_users(client: Client, settings, class_name,
                 payload=payload,
                 provider_token=settings.provider_token,
                 reminder_interval_days=reminder_interval_days,
+                group_id=group_id,
             )
 
             await client.send_message(

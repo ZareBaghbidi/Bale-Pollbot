@@ -125,6 +125,7 @@ class Invoice(Base):
     description = Column(Text)
     payload = Column(Text)
     provider_token = Column(Text)
+    group_id = Column(Text, index=True)
     sent_at = Column(Integer)
     reminder_interval_days = Column(Integer)
     next_reminder_at = Column(Integer)

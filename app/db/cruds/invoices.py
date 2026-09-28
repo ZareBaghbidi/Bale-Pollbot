@@ -25,7 +25,7 @@ __all__ = [
 
 
 def save_invoice(user_id, class_name, amount, title, description, payload,
-                 provider_token, reminder_interval_days=None):
+                 provider_token, reminder_interval_days=None, group_id=None):
     now = int(datetime.datetime.now().timestamp())
     with SessionLocal() as session:
         inv = Invoice(
@@ -36,6 +36,7 @@ def save_invoice(user_id, class_name, amount, title, description, payload,
             description=description,
             payload=payload,
             provider_token=provider_token,
+            group_id=group_id,
             sent_at=now,
             reminder_interval_days=reminder_interval_days,
             next_reminder_at=(now + reminder_interval_days * 24 * 3600
@@ -88,49 +89,116 @@ def get_all_invoices(days=None, status=None, class_name=None, limit=50):
         return [dict(r[0].__dict__, user_name=r[1], telegram_charge_id=r[2]) for r in rows]
 
 
+def _invoice_group_columns():
+    return (
+        Invoice.group_id,
+        Invoice.class_name,
+        Invoice.title,
+        Invoice.amount,
+        Invoice.description,
+        Invoice.reminder_interval_days,
+    )
+
+
+def _active_invoice_groups_query():
+    return (
+        select(
+            func.min(Invoice.id).label("id"),
+            Invoice.group_id.label("group_id"),
+            Invoice.class_name.label("class_name"),
+            Invoice.title.label("title"),
+            Invoice.amount.label("amount"),
+            Invoice.description.label("description"),
+            Invoice.reminder_interval_days.label("reminder_interval_days"),
+            func.sum(case((Invoice.status == "sent", 1), else_=0)).label(
+                "unpaid_count"),
+            func.sum(case((Invoice.status == "paid", 1), else_=0)).label(
+                "paid_count"),
+            func.max(Invoice.sent_at).label("last_sent"),
+        )
+        .group_by(*_invoice_group_columns())
+        .having(func.sum(case((Invoice.status == "sent", 1), else_=0)) > 0)
+    )
+
+
 def get_active_invoices(offset=0, limit=8):
     with SessionLocal() as session:
         rows = session.execute(
-            select(Invoice, User.name.label("user_name"))
-            .outerjoin(User, Invoice.user_id == User.chat_id)
-            .where(Invoice.status == "sent")
-            .order_by(Invoice.sent_at.desc(), Invoice.id.desc())
+            _active_invoice_groups_query()
+            .order_by(func.max(Invoice.sent_at).desc(), func.min(Invoice.id).desc())
             .offset(offset)
             .limit(limit)
-        ).all()
-        return [dict(row[0].__dict__, user_name=row[1]) for row in rows]
+        ).mappings().all()
+        return [dict(row) for row in rows]
 
 
 def get_active_invoice_count():
     with SessionLocal() as session:
-        return session.execute(
-            select(func.count()).select_from(Invoice)
-            .where(Invoice.status == "sent")
-        ).scalar_one()
+        groups = _active_invoice_groups_query().subquery()
+        return session.execute(select(func.count()).select_from(groups)).scalar_one()
+
+
+def _invoice_group_filter(invoice):
+    if invoice.group_id is not None:
+        return (Invoice.group_id == invoice.group_id,)
+
+    # Older rows predate explicit batch IDs; use their billing details as the
+    # best available grouping key so existing unpaid invoices remain manageable.
+    filters = [Invoice.group_id.is_(None)]
+    for column_name in (
+            "class_name", "title", "amount", "description",
+            "reminder_interval_days"):
+        column = getattr(Invoice, column_name)
+        value = getattr(invoice, column_name)
+        filters.append(column.is_(None) if value is None else column == value)
+    return tuple(filters)
 
 
 def get_active_invoice(invoice_id):
     with SessionLocal() as session:
+        invoice = session.execute(
+            select(Invoice).where(Invoice.id == invoice_id)
+        ).scalar_one_or_none()
+        if invoice is None:
+            return None
+
+        filters = _invoice_group_filter(invoice)
         row = session.execute(
-            select(Invoice, User.name.label("user_name"))
-            .outerjoin(User, Invoice.user_id == User.chat_id)
-            .where(
-                Invoice.id == invoice_id,
-                Invoice.status == "sent",
-            )
-        ).first()
-        return dict(row[0].__dict__, user_name=row[1]) if row else None
+            select(
+                func.min(Invoice.id).label("id"),
+                Invoice.group_id.label("group_id"),
+                Invoice.class_name.label("class_name"),
+                Invoice.title.label("title"),
+                Invoice.amount.label("amount"),
+                Invoice.description.label("description"),
+                Invoice.reminder_interval_days.label("reminder_interval_days"),
+                func.sum(case((Invoice.status == "sent", 1), else_=0)).label(
+                    "unpaid_count"),
+                func.sum(case((Invoice.status == "paid", 1), else_=0)).label(
+                    "paid_count"),
+            ).where(*filters)
+        ).mappings().one()
+        group = dict(row)
+        return group if group["unpaid_count"] else None
 
 
 def deactivate_invoice(invoice_id):
     with SessionLocal() as session:
+        invoice = session.execute(
+            select(Invoice).where(Invoice.id == invoice_id)
+        ).scalar_one_or_none()
+        if invoice is None:
+            return 0
         result = session.execute(
             update(Invoice)
-            .where(Invoice.id == invoice_id, Invoice.status == "sent")
+            .where(
+                *_invoice_group_filter(invoice),
+                Invoice.status == "sent",
+            )
             .values(status="cancelled", next_reminder_at=None)
         )
         session.commit()
-        return result.rowcount > 0
+        return result.rowcount or 0
 
 
 def get_invoice_stats():

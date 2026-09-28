@@ -37,3 +37,9 @@ def init_db():
         if "next_reminder_at" not in invoice_columns:
             connection.execute(text(
                 "ALTER TABLE invoices ADD COLUMN next_reminder_at INTEGER"))
+        if "group_id" not in invoice_columns:
+            connection.execute(text(
+                "ALTER TABLE invoices ADD COLUMN group_id TEXT"))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_invoices_group_id "
+            "ON invoices (group_id)"))

@@ -75,6 +75,6 @@ OWNER_HELP = (
     "• /payments، /user_payments <شناسه>، /payments_filter days=7 min=5000\n"
     "• /invoices، /invoices_filter days=7 status=paid class=05\n"
     "• /invoices_class <نام>، /invoices_unpaid، /invoice_stats\n"
-    "• /deactivate_invoice → انتخاب و غیرفعال‌کردن صورتحساب فعال\n\n"
+    "• /deactivate_invoice → انتخاب یک گروه صورتحساب و غیرفعال‌کردن همهٔ موارد پرداخت‌نشدهٔ آن برای کاربران\n\n"
     "• /help → نمایش این راهنما"
 )

@@ -19,9 +19,12 @@ INVOICE_DEACTIVATION_PAGE_SIZE = 8
 def _invoice_deactivation_keyboard(uid, invoices, page, total):
     rows = []
     for invoice in invoices:
-        title = (invoice.get("title") or "صورتحساب")[:16]
-        class_name = (invoice.get("class_name") or "عمومی")[:10]
-        label = f"⛔ #{invoice['id']} {title} / {class_name} / {invoice['user_id']}"
+        title = (invoice.get("title") or "صورتحساب")[:13]
+        class_name = (invoice.get("class_name") or "عمومی")[:8]
+        label = (
+            f"⛔ {title} / {class_name} / "
+            f"{invoice['unpaid_count']} مورد"
+        )
         rows.append([(label, f"ivd:select:{uid}:{invoice['id']}:{page}")])
 
     navigation = []
@@ -38,7 +41,7 @@ def _invoice_deactivation_keyboard(uid, invoices, page, total):
 async def _show_active_invoice_list(uid, message, page=0, edit=False):
     total = get_active_invoice_count()
     if not total:
-        text = "صورتحساب فعالی برای غیرفعال‌کردن وجود ندارد."
+        text = "گروه صورتحساب پرداخت‌نشده‌ای برای غیرفعال‌کردن وجود ندارد."
         if edit:
             await message.edit_text(text, reply_markup=None)
         else:
@@ -51,8 +54,8 @@ async def _show_active_invoice_list(uid, message, page=0, edit=False):
     invoices = get_active_invoices(
         offset=offset, limit=INVOICE_DEACTIVATION_PAGE_SIZE)
     text = (
-        f"🧾 صورتحساب‌های فعال ({total} مورد)\n"
-        "برای انتخاب و غیرفعال‌کردن، دکمهٔ صورتحساب را بزنید.\n"
+        f"🧾 گروه‌های صورتحساب فعال ({total} مورد)\n"
+        "یک مورد را انتخاب کنید تا برای همهٔ پرداخت‌نکرده‌هایش غیرفعال شود.\n"
         f"صفحهٔ {page + 1} از {last_page + 1}"
     )
     keyboard = _invoice_deactivation_keyboard(uid, invoices, page, total)
@@ -118,14 +121,18 @@ async def handle_invoice_deactivation_callback(callback_query, settings):
 
         if action == "select":
             class_name = invoice.get("class_name") or "عمومی"
-            user_name = invoice.get("user_name") or invoice["user_id"]
+            unpaid_count = invoice["unpaid_count"]
+            paid_count = invoice["paid_count"]
             summary = (
-                f"صورتحساب #{invoice_id}\n"
+                f"گروه صورتحساب #{invoice_id}\n"
                 f"عنوان: {invoice['title']}\n"
                 f"کلاس: {class_name}\n"
-                f"کاربر: {user_name} (شناسه: {invoice['user_id']})\n"
                 f"مبلغ: {invoice['amount'] // 10:,} تومان\n\n"
-                "با تأیید، صورتحساب از فهرست پرداخت‌نشده حذف می‌شود و یادآوری آن متوقف خواهد شد."
+                f"پرداخت‌نشده: {unpaid_count} مورد\n"
+                f"پرداخت‌شده: {paid_count} مورد\n\n"
+                f"با تأیید، هر {unpaid_count} صورتحساب پرداخت‌نشدهٔ این گروه "
+                "برای همهٔ کاربران غیرفعال می‌شود و یادآوری آن‌ها متوقف خواهد شد. "
+                "صورتحساب‌های پرداخت‌شده تغییری نمی‌کنند."
             )
             keyboard = InlineKeyboard(
                 [("✅ تأیید غیرفعال‌سازی", f"ivd:confirm:{uid}:{invoice_id}:{page}")],
@@ -135,15 +142,17 @@ async def handle_invoice_deactivation_callback(callback_query, settings):
             await callback_query.message.edit_text(summary, reply_markup=keyboard)
             return
 
-        if not deactivate_invoice(invoice_id):
+        deactivated_count = deactivate_invoice(invoice_id)
+        if not deactivated_count:
             await callback_query.answer(
                 "صورتحساب غیرفعال نشد؛ احتمالاً قبلاً تغییر کرده است.",
                 show_alert=True,
             )
             return
-        await callback_query.answer("صورتحساب غیرفعال شد.")
+        await callback_query.answer("گروه صورتحساب غیرفعال شد.")
         await callback_query.message.edit_text(
-            f"✅ صورتحساب «{invoice['title']}» برای کاربر {invoice['user_id']} غیرفعال شد.",
+            f"✅ {deactivated_count} صورتحساب «{invoice['title']}» "
+            "غیرفعال شد. یادآوری‌ها هم متوقف شدند.",
             reply_markup=None,
         )
         return
