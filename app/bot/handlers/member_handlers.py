@@ -20,7 +20,13 @@ def member_help_keyboard(message_owner_label="✉️ پیام به ادمین",
         ["✏️ تغییر نام"],
     ]
     if owner_controls:
-        rows.append(["⛔ غیرفعال‌سازی صورتحساب"])
+        rows.extend([
+            ["👑 مدیریت ادمین‌ها", "📊 ساخت نظرسنجی"],
+            ["🏫 فهرست کلاس‌ها", "👥 مدیریت کاربران کلاس‌ها"],
+            ["📨 ارسال پیام", "🗓 نظرسنجی‌های زمان‌بندی‌شده"],
+            ["📈 گزارش نظرسنجی‌ها", "📤 خروجی اکسل"],
+            ["💳 ساخت صورتحساب", "⛔ غیرفعال‌سازی صورتحساب"],
+        ])
     rows.append(["❔ راهنما"])
     return ReplyKeyboard(
         *rows,
@@ -105,11 +111,11 @@ async def handle_member_message(uid, text, message, client, user_states, owners,
         return True
     if text == "message_owner":
         if not owners:
-            await message.reply("در حال حاضر اونری برای دریافت پیام تنظیم نشده است.")
+            await message.reply("در حال حاضر ادمینی برای دریافت پیام تنظیم نشده است.")
             return True
         user_states[uid] = "waiting_for_owner_message"
         await message.reply(
-            "پیامت را برای اونرها بفرست:",
+            "پیامت را بفرست؛ برای ادمین‌های ربات ارسال می‌شود:",
             reply_markup=InlineKeyboard([("❌ لغو", f"user:cancel:{uid}")]),
         )
         return True
@@ -140,12 +146,12 @@ async def forward_owner_message(uid, text, message, client, owners, user_states)
         return True
     if not owners:
         user_states.pop(uid, None)
-        await message.reply("در حال حاضر اونری برای دریافت پیام تنظیم نشده است.")
+        await message.reply("در حال حاضر ادمینی برای دریافت پیام تنظیم نشده است.")
         return True
 
     sender_name = (get_user_name(uid) or message.author.first_name or "بدون نام")[:80]
     header = (
-        "✉️ پیام به اونرهای ربات\n"
+        "✉️ پیام به ادمین ربات\n"
         f"👤 نام: {sender_name}\n"
         f"🆔 شناسهٔ کاربر: {uid}\n\n"
     )
@@ -171,10 +177,11 @@ async def forward_owner_message(uid, text, message, client, owners, user_states)
 
     user_states.pop(uid, None)
     if delivered and not failed:
-        await message.reply("✅ پیامت برای اونرها ارسال شد.")
+        await message.reply("✅ پیامت برای ادمین‌های ربات ارسال شد.")
     elif delivered:
         await message.reply(
-            f"پیامت برای {delivered} اونر ارسال شد؛ ارسال برای {failed} اونر ناموفق بود."
+            f"پیامت برای {delivered} ادمین ارسال شد؛ "
+            f"ارسال برای {failed} ادمین ناموفق بود."
         )
     else:
         await message.reply("ارسال پیام انجام نشد؛ کمی بعد دوباره تلاش کن.")
@@ -287,14 +294,14 @@ async def handle_member_callback(callback_query, client, user_states, owners,
         # admins or other users.
         if not owners:
             await callback_query.answer(
-                "در حال حاضر اونری برای دریافت پیام تنظیم نشده است.",
+                "در حال حاضر ادمینی برای دریافت پیام تنظیم نشده است.",
                 show_alert=True,
             )
             return
         user_states[uid] = "waiting_for_owner_message"
         await callback_query.answer(" ")
         await callback_query.message.reply(
-            "پیامت را برای اونرها بفرست:",
+            "پیامت را بفرست؛ برای ادمین‌های ربات ارسال می‌شود:",
             reply_markup=InlineKeyboard([("❌ لغو", f"user:cancel:{uid}")]),
         )
         return

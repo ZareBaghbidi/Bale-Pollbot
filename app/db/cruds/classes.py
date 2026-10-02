@@ -9,6 +9,7 @@ __all__ = [
     "get_class_id_by_name",
     "get_users_in_class",
     "add_users_to_class",
+    "update_class_users",
     "get_class_users_with_names",
     "remove_user_from_class",
     "delete_class"
@@ -57,6 +58,21 @@ def add_users_to_class(class_id, user_ids):
         data = [UserClass(user_id=uid, class_id=class_id) for uid in user_ids]
         for uc in data:
             session.merge(uc)
+        session.commit()
+
+
+def update_class_users(class_id, add_user_ids=(), remove_user_ids=()):
+    """Apply class membership additions and removals in one transaction."""
+    with SessionLocal() as session:
+        if remove_user_ids:
+            session.execute(
+                delete(UserClass).where(
+                    UserClass.class_id == class_id,
+                    UserClass.user_id.in_(remove_user_ids),
+                )
+            )
+        for uid in add_user_ids:
+            session.merge(UserClass(user_id=uid, class_id=class_id))
         session.commit()
 
 

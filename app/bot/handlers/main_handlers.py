@@ -1,5 +1,6 @@
 import time
 import traceback
+from balethon.objects import InlineKeyboard
 from app.bot.handlers.class_handlers import (
     class_hadnler,
     handle_send_message_input,
@@ -22,6 +23,7 @@ from app.bot.handlers.member_handlers import (
     forward_bug_report,
     member_help_keyboard,
 )
+from app.bot.handlers.admin_access_handlers import handle_admin_add_message
 from app.services.patment import process_successful_payment
 from app.services.poll import send_poll
 from app.db.export_votes import export_votes
@@ -34,7 +36,7 @@ COMMAND_NAMES = {
     "report_bug", "deactivate_invoice",
     "roles", "add_admin", "remove_admin", "create_poll", "list_classes",
     "users", "list_users", "add_users", "create_class", "class_users",
-    "remove_from_class", "delete_class", "send_message", "stop", "clear",
+    "delete_class", "send_message", "stop", "clear",
     "list_polls", "view_responses", "scheduled_polls", "cancel_scheduled",
     "report", "export_votes", "get_money", "payments", "user_payments",
     "payments_filter", "invoices", "invoices_filter", "invoices_class",
@@ -61,6 +63,16 @@ HELP_BUTTON_COMMANDS = {
     "✉️ پیام به اونرها": "message_owner",
     "✉️ پیام به مسئولان ربات": "message_owner",
     "🐞 گزارش باگ در ربات": "report_bug",
+    "👑 مدیریت ادمین‌ها": "roles",
+    "📊 ساخت نظرسنجی": "create_poll",
+    "🏫 فهرست کلاس‌ها": "list_classes",
+    "👥 مدیریت کاربران کلاس‌ها": "add_users",
+    "➕ افزودن کاربران به کلاس": "add_users",
+    "📨 ارسال پیام": "send_message",
+    "🗓 نظرسنجی‌های زمان‌بندی‌شده": "scheduled_polls",
+    "📈 گزارش نظرسنجی‌ها": "report",
+    "📤 خروجی اکسل": "export_votes",
+    "💳 ساخت صورتحساب": "get_money",
 }
 
 
@@ -139,6 +151,7 @@ async def on_message(message, settings, client, user_states, pending_actions, al
             "poll_wizard_question", "get_money_amount", "get_money_title",
             "get_money_description", "waiting_add_users", "send_message_id",
             "send_message_text",
+            "admin_add_ids",
         }
         text = (raw_text if user_states.get(uid) in text_states
                 else _normalize_command(raw_text))
@@ -149,6 +162,17 @@ async def on_message(message, settings, client, user_states, pending_actions, al
 
         if uid in user_states:
             state = user_states[uid]
+            if state == "admin_add_ids":
+                await handle_admin_add_message(
+                    uid, text, message, client, settings,
+                    pending_actions, user_states)
+                return
+
+            if state in ("add_users_select_class", "add_users_select_users",
+                         "admin_remove_select"):
+                await message.reply("لطفاً انتخاب را با دکمه‌های پیام قبلی انجام بده.")
+                return
+
             if state == 'waiting_for_name':
                 if not text:
                     await message.reply("لطفاً نام خود را وارد کنید.")
@@ -179,7 +203,7 @@ async def on_message(message, settings, client, user_states, pending_actions, al
                 await message.reply(
                     "نام شما ثبت شد. حالا می‌توانید در نظرسنجی شرکت کنید.",
                     reply_markup=member_help_keyboard(
-                        "✉️ پیام به اونرها" if uid in settings.owners else "✉️ پیام به ادمین",
+                        "✉️ پیام به ادمین",
                         owner_controls=uid in settings.owners,
                     ),
                 )
@@ -264,11 +288,11 @@ async def on_message(message, settings, client, user_states, pending_actions, al
             if is_owner:
                 await message.reply(
                     OWNER_HELP, reply_markup=member_help_keyboard(
-                        "✉️ پیام به اونرها", owner_controls=True))
+                        "✉️ پیام به ادمین", owner_controls=True))
             elif is_admin:
                 await message.reply(
                     ADMIN_HELP, reply_markup=member_help_keyboard(
-                        "✉️ پیام به اونرها"))
+                        "✉️ پیام به ادمین"))
             else:
                 await handle_member_message(
                     uid, text, message, client, user_states, settings.owners,
@@ -306,74 +330,34 @@ async def on_message(message, settings, client, user_states, pending_actions, al
                         for person_id in sorted(ids)
                     ) or "• هیچ‌کس"
 
+                admin_buttons = [
+                    [(f"⚙️ کلاس‌های {(get_user_name(admin_id) or str(admin_id))[:24]}",
+                      f"rac:open:{uid}:{admin_id}")]
+                    for admin_id in sorted(settings.admins)
+                ]
+                admin_buttons.insert(0, [
+                    ("➕ افزودن ادمین", f"ar:add:{uid}"),
+                    ("➖ حذف ادمین", f"ar:remove:{uid}"),
+                ])
+                roles_keyboard = (
+                    InlineKeyboard(*admin_buttons) if admin_buttons else None)
                 await message.reply(
                     "👑 اونرها (تنظیم فقط از فایل .env):\n"
                     f"{format_people(settings.owners)}\n\n"
-                    "🛡 ادمین‌ها (دسترسی محدود):\n"
+                    "🛡 ادمین‌ها (دسترسی کلاس‌ها را با دکمه‌های زیر مدیریت کنید):\n"
                     f"{format_people(settings.admins)}\n\n"
-                    "دستورها: /add_admin <شناسه> و /remove_admin <شناسه>"
+                    "برای افزودن یا حذف ادمین از دکمه‌های زیر استفاده کنید.",
+                    reply_markup=roles_keyboard,
                 )
                 return
 
             command_parts = text.split(maxsplit=1)
             if command_parts and command_parts[0] in ("add_admin", "remove_admin"):
-                parts = text.split()
-                command = parts[0]
-                if len(parts) != 2:
-                    await message.reply(f"فرمت: {command} <شناسه کاربر>")
-                    return
-                try:
-                    target_id = int(parts[1])
-                except ValueError:
-                    await message.reply("شناسه کاربر باید عددی باشد.")
-                    return
-                if target_id in settings.owners:
-                    await message.reply("اونر را نمی‌توان به فهرست ادمین‌ها اضافه یا از آن حذف کرد.")
-                    return
-
-                adding = command == "add_admin"
-                if adding and target_id in settings.admins:
-                    await message.reply("این کاربر از قبل ادمین است.")
-                    return
-                if not adding and target_id not in settings.admins:
-                    await message.reply("این کاربر در فهرست ادمین‌ها نیست.")
-                    return
-
-                if adding:
-                    settings.admins.add(target_id)
-                else:
-                    settings.admins.remove(target_id)
-                try:
-                    save_admins(settings.admins)
-                except OSError:
-                    if adding:
-                        settings.admins.remove(target_id)
-                    else:
-                        settings.admins.add(target_id)
-                    await message.reply("ذخیره تغییرات در فایل .env انجام نشد؛ دسترسی فایل را بررسی کنید.")
-                    return
-                action = "به فهرست ادمین‌ها اضافه شد" if adding else "از فهرست ادمین‌ها حذف شد"
-                await message.reply(f"کاربر {target_id} {action}.")
-                if adding:
-                    notification = (
-                        "✅ شما به‌عنوان ادمین ربات انتخاب شده‌اید.\n\n"
-                        f"{ADMIN_HELP}"
-                    )
-                else:
-                    notification = "ℹ️ دسترسی ادمین شما از ربات برداشته شد."
-                try:
-                    await client.send_message(
-                        target_id, notification,
-                        reply_markup=(member_help_keyboard(
-                            "✉️ پیام به اونرها") if adding else member_help_keyboard()),
-                    )
-                except Exception as e:
-                    print(f"خطا در اطلاع‌رسانی تغییر نقش به {target_id}: {e}")
-                    await message.reply(
-                        "تغییر نقش ذخیره شد، اما پیام خصوصی به کاربر نرسید. "
-                        "از او بخواه ابتدا ربات را باز کند و /help را بفرستد."
-                    )
+                await message.reply(
+                    "مدیریت ادمین‌ها از دکمه‌های دستور /roles انجام می‌شود."
+                )
                 return
+
 
         if is_owner or is_admin:
             if is_admin and not is_owner:
@@ -389,7 +373,8 @@ async def on_message(message, settings, client, user_states, pending_actions, al
             if await class_hadnler(uid, text, message, pending_actions,
                                    user_states, settings.owners):
                 return
-            if await user_hadnler(uid, text, message, user_states):
+            if await user_hadnler(
+                    uid, text, message, pending_actions, user_states):
                 return
             if await invoice_hadnler(uid, text, message, settings.owners):
                 return

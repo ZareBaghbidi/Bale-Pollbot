@@ -5,7 +5,9 @@ import datetime
 import traceback
 import jdatetime
 from balethon.objects import InlineKeyboard
-from app.db.cruds.classes import delete_class, get_all_classes, get_users_in_class
+from app.db.cruds.classes import (
+    delete_class, get_all_classes, get_class_id_by_name, get_users_in_class,
+)
 from app.db.cruds.polls import create_poll, get_poll_class, get_poll_type, is_poll_active
 from app.db.cruds.questions import add_question, get_question_id
 from app.db.cruds.tasks import add_task
@@ -14,7 +16,11 @@ from app.db.cruds.votes import vote
 from app.services.patment import send_pay_to_class
 from app.bot.handlers.member_handlers import handle_member_callback
 from app.bot.handlers.invoice_handlers import handle_invoice_deactivation_callback
-from app.bot.handlers.invoice_handlers import handle_invoice_deactivation_callback
+from app.bot.handlers.admin_access_handlers import (
+    admin_can_access_class, handle_admin_access_callback,
+    handle_admin_role_callback,
+)
+from app.bot.handlers.user_handlers import handle_add_users_callback
 from app.bot.handlers.class_handlers import _send_message_cancel_keyboard
 from app.services.poll import activate_poll
 from app.bot.poll_calendar import (
@@ -267,7 +273,8 @@ async def cancel_pay(callback_query, pending_actions,  user_states):
     return
 
 
-async def confirm_poll(callback_query, pending_actions, client, user_states):
+async def confirm_poll(callback_query, pending_actions, client, user_states,
+                       settings):
     target_uid = int(callback_query.data.split("_")[2])
 
     if callback_query.author.id != target_uid:
@@ -280,6 +287,20 @@ async def confirm_poll(callback_query, pending_actions, client, user_states):
         await callback_query.answer(
             "اطلاعات نظرسنجی یافت نشد یا منقضی شده!", show_alert=True)
         return
+
+    if target_uid not in settings.owners:
+        class_id = get_class_id_by_name(pending.get("class_name"))
+        if class_id is None or not admin_can_access_class(
+                settings, target_uid, class_id):
+            pending_actions.pop(target_uid, None)
+            user_states.pop(target_uid, None)
+            await callback_query.answer(
+                "دسترسی شما به این کلاس لغو شده است.", show_alert=True)
+            await callback_query.message.edit_text(
+                "ساخت نظرسنجی لغو شد؛ دیگر به این کلاس دسترسی ندارید.",
+                reply_markup=None,
+            )
+            return
 
     await callback_query.answer("در حال ایجاد نظرسنجی...")
 
@@ -403,11 +424,22 @@ async def poll_wizard_callback(callback_query, settings, pending_actions, user_s
             return
         pending["poll_type"] = parts[3]
         classes = get_all_classes()
+        if uid not in settings.owners:
+            classes = [
+                item for item in classes
+                if admin_can_access_class(settings, uid, item[0])
+            ]
         if not classes:
             pending_actions.pop(uid, None)
             user_states.pop(uid, None)
-            await callback_query.answer("هنوز کلاسی ساخته نشده است.", show_alert=True)
-            await callback_query.message.edit_text("برای ساخت نظرسنجی اول باید یک کلاس بسازید.", reply_markup=None)
+            if uid in settings.owners:
+                alert = "هنوز کلاسی ساخته نشده است."
+                text = "برای ساخت نظرسنجی اول باید یک کلاس بسازید."
+            else:
+                alert = "هیچ کلاس مجازی برای شما وجود ندارد."
+                text = "اونر هنوز دسترسی نظرسنجی برای کلاسی به شما نداده است."
+            await callback_query.answer(alert, show_alert=True)
+            await callback_query.message.edit_text(text, reply_markup=None)
             return
         pending["step"] = "class"
         user_states[uid] = "poll_wizard_class"
@@ -427,6 +459,13 @@ async def poll_wizard_callback(callback_query, settings, pending_actions, user_s
         class_item = next((item for item in get_all_classes() if item[0] == class_id), None)
         if class_item is None:
             await callback_query.answer("این کلاس دیگر وجود ندارد.", show_alert=True)
+            return
+        if uid not in settings.owners and not admin_can_access_class(
+                settings, uid, class_id):
+            await callback_query.answer(
+                "شما اجازهٔ ساخت نظرسنجی برای این کلاس را ندارید.",
+                show_alert=True,
+            )
             return
         pending["class_name"] = class_item[1]
         pending["step"] = "question"
@@ -833,6 +872,16 @@ async def voting(callback_query, pending_actions, user_states, client):
 async def on_callback_query(callback_query, settings, client, pending_actions, user_states):
     print("Callback received! data:", callback_query.data)
 
+    if callback_query.data.startswith("au:"):
+        await handle_add_users_callback(
+            callback_query, settings, pending_actions, user_states)
+        return
+
+    if callback_query.data.startswith("ar:"):
+        await handle_admin_role_callback(
+            callback_query, client, settings, pending_actions, user_states)
+        return
+
     if callback_query.data.startswith("sm:"):
         await send_message_wizard_callback(
             callback_query, settings, pending_actions, user_states)
@@ -840,6 +889,10 @@ async def on_callback_query(callback_query, settings, client, pending_actions, u
 
     if callback_query.data.startswith("ivd:"):
         await handle_invoice_deactivation_callback(callback_query, settings)
+        return
+
+    if callback_query.data.startswith("rac:"):
+        await handle_admin_access_callback(callback_query, settings)
         return
 
     if callback_query.data.startswith("user:"):
@@ -872,7 +925,8 @@ async def on_callback_query(callback_query, settings, client, pending_actions, u
         return
 
     elif callback_query.data.startswith("confirm_poll_"):
-        await confirm_poll(callback_query, pending_actions, client, user_states)
+        await confirm_poll(
+            callback_query, pending_actions, client, user_states, settings)
         return
 
     elif callback_query.data.startswith("cancel_poll_"):

@@ -1,13 +1,12 @@
 import datetime
 from balethon.objects import InlineKeyboard
-from app.bot.messages import WRONG_REMOVE_FROM_CLASS_HELP, WRONG_SEND_MESSAGE_HELP
+from app.bot.messages import WRONG_SEND_MESSAGE_HELP
 from app.db.cruds.classes import (
     create_class,
     get_all_classes,
     get_class_id_by_name,
     get_class_users_with_names,
     get_users_in_class,
-    remove_user_from_class,
 )
 from app.db.cruds.invoices import get_all_invoices, get_class_invoice_summary
 from app.db.cruds.users import get_user_name
@@ -128,24 +127,6 @@ async def handle_send_message_input(uid, text, message, pending_actions,
         return True
 
     return False
-
-
-async def _handle_remove_from_class(text, message):
-    parts = text.split()
-    if len(parts) != 3:
-        await message.reply(WRONG_REMOVE_FROM_CLASS_HELP)
-        return
-
-    class_name = parts[1].strip()
-    try:
-        user_id = int(parts[2].strip())
-    except ValueError:
-        await message.reply("❌ آیدی کاربر باید یک عدد معتبر باشد.")
-        return
-
-    success, result = remove_user_from_class(class_name, user_id)
-    await message.reply(result)
-    return
 
 
 async def _handle_create_class(text, message):
@@ -325,10 +306,6 @@ async def class_hadnler(uid, text, message, pending_actions, user_states, admins
 
     if text.startswith("send_message"):
         await _handle_send_message(uid, text, message, pending_actions, user_states)
-        return True
-
-    if text.startswith("remove_from_class"):
-        await _handle_remove_from_class(text, message)
         return True
 
     if text == "list_classes":
